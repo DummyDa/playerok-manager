@@ -68,7 +68,7 @@ export function UpdateSettings() {
     catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
-  return <Panel title="Обновления приложения" subtitle="Проверяем GitHub каждые 15 минут. Установка — только по вашему решению." action={<Button secondary disabled={busy || active.includes(data?.progress?.state)} onClick={check}>{busy ? <Spinner /> : <RefreshCw size={15} />}Проверить обновления</Button>}>
+  return <Panel title="Обновления приложения" subtitle="Проверяем GitHub при запуске сервера и каждые 15 минут. Установка — только по вашему решению." action={<Button secondary disabled={busy || active.includes(data?.progress?.state)} onClick={check}>{busy ? <Spinner /> : <RefreshCw size={15} />}Проверить обновления</Button>}>
     <div className="form-pad update-settings"><p>Установленный коммит: <code>{data?.current_commit?.slice(0, 7) || "Не определён (ZIP-копия)"}</code></p><p>Последняя проверка: {date(data?.checked_at)}</p><p className="muted">Время проверок — UTC+3.</p>
       {data?.available && <p>Новая версия: <a href={data.commit_url} target="_blank" rel="noreferrer">{data.latest_commit?.slice(0, 7)}</a> — {data.message?.split("\n")[0]}{data.dismissed && <Button secondary onClick={async () => { await api("/updates/dismiss", "POST", { commit: "0".repeat(40) }); await update.mutate(); }}>Показать обновление</Button>}</p>}
       {!data?.available && data?.checked_at && !data.last_error && <p>Новых обновлений нет.</p>}

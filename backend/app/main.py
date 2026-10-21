@@ -4,6 +4,7 @@ import hashlib
 import json
 import secrets
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 from fastapi import FastAPI,Request,Response,HTTPException,UploadFile,File,Form,Query
@@ -28,7 +29,13 @@ def old_running():
 
 def create_app(db:Database|None=None):
     db=db or Database(Config())
-    app=FastAPI(title="Playerok Manager 2",version="1.0.0",docs_url="/api/docs",openapi_url="/api/openapi.json")
+    @asynccontextmanager
+    async def lifespan(app):
+        # Each API boot gets a fresh check, regardless of the persisted interval.
+        db.enqueue("check_updates",key="check_updates")
+        db.put("clock","check_updates",{"next":time.time()+900})
+        yield
+    app=FastAPI(title="Playerok Manager 2",version="1.0.0",docs_url="/api/docs",openapi_url="/api/openapi.json",lifespan=lifespan)
     app.state.db=db
     from .connection_api import router as connection_router
     app.include_router(connection_router(db))

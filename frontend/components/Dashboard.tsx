@@ -8,6 +8,7 @@ import { api, setCsrf, typedClient } from "../lib/api";
 import { Badge, Button, Field, Notice, Spinner, money } from "./ui";
 import { Overview, Lots, Gifts, Pricing, Fees, Competitors, Promotions, Orders, Finance, Events, Settings } from "./Sections";
 import { UpdateBanner } from "./Updates";
+import ReadStatus from "./ReadStatus";
 
 const nav = [
   ["", "Обзор", LayoutDashboard], ["lots", "Лоты", Boxes], ["orders", "Заказы", ReceiptText],
@@ -82,7 +83,7 @@ function Workspace() {
         <div className="topbar-right"><Link prefetch={false} href="/history" className="icon-button" aria-label="История уведомлений" title="История уведомлений"><Bell size={18} /></Link><Link prefetch={false} href="/settings" className="account-chip"><span className="avatar">{(settings.data?.playerok_username || "P").slice(0, 1)}</span><div><strong>{settings.data?.playerok_username || "Мой магазин"}</strong><small><i className={workerAlive ? "alive" : ""} />{workerAlive ? "Система работает" : "Нет связи с воркером"}</small></div></Link><button className="icon-button" title="Выйти" aria-label="Выйти" onClick={() => act(async () => { await api("/auth/logout", "POST"); location.reload(); })}><LogOut size={18} /></button></div>
       </header>
       <main id="main-content" tabIndex={-1} className="content"><div className="page-heading"><div><div className="eyebrow">ВАШ МАГАЗИН ПОД КОНТРОЛЕМ</div><h1>{selected[1]}</h1><p>{descriptions[path]}</p></div><div className="heading-actions"><button className={settings.data?.emergency_stop ? "btn resume" : "btn stop"} disabled={busy || !settings.data} onClick={() => settings.data?.emergency_stop ? act(() => api("/settings", "PATCH", { emergency_stop: false }), "Автоматизация возобновлена") : act(() => api("/automation/stop", "POST"), "Новые торговые действия остановлены")}>{settings.data?.emergency_stop ? <Play size={16} /> : <OctagonPause size={16} />}{settings.data?.emergency_stop ? "Возобновить" : "Стоп"}</button></div></div>
-      <UpdateBanner />{settings.error && <Notice error>{settings.error.message}</Notice>}{message && <div className="toast" role="status"><Notice error={error}>{message}</Notice><button aria-label="Скрыть уведомление" onClick={() => setMessage("")}>×</button></div>}{sections[path] || <Notice>Раздел не найден.</Notice>}</main>
+      <UpdateBanner /><ReadStatus error={settings.error} cached={!!settings.data} />{message && <div className="toast" role="status"><Notice error={error}>{message}</Notice><button aria-label="Скрыть уведомление" onClick={() => setMessage("")}>×</button></div>}{sections[path] || <Notice>Раздел не найден.</Notice>}</main>
       <footer className="app-footer"><span>PLAYEROK GIFT MANAGER <b>2.0</b></span><span>Данные на вашем компьютере · UTC+3</span></footer>
     </div>
   </div>;

@@ -33,6 +33,18 @@ def test_get_updates_is_cached_and_never_calls_github(db,client,monkeypatch):
     assert client.post("/api/v1/updates/check").json()["task_id"]
     fake.assert_not_called()
 
+def test_every_api_start_queues_update_check_even_when_clock_is_in_the_future(db):
+    from backend.app.db import Task
+    from sqlalchemy import select
+    db.put("clock","check_updates",{"next":time.time()+86400})
+    for _ in range(2):
+        with TestClient(create_app(db)):
+            with db.sessions() as session:
+                tasks=list(session.scalars(select(Task).where(Task.kind=="check_updates",Task.state=="READY")))
+                assert len(tasks)==1
+                tasks[0].state="COMPLETE";tasks[0].dedupe=None;session.commit()
+            assert db.get("clock","check_updates")["next"]<time.time()+901
+
 def test_new_commit_dismissal_and_later_commit_reappear(db,client,monkeypatch):
     local(monkeypatch);http=Mock();http.get.return_value=response()
     updates.check(db,http)

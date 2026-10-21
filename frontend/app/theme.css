@@ -82,3 +82,5 @@ h1,h2,h3,p{margin:0}h1{font-size:34px;letter-spacing:-.8px;line-height:1.25;font
 @media(max-width:700px){.update-banner{flex-wrap:wrap;padding:18px}.update-banner .button-group{width:100%;justify-content:flex-end}}
 
 .btn.resume{color:var(--green);background:#e8f5ee;border:1px solid #bbdeca}.btn.resume:hover:not(:disabled){background:#d9eee2}
+
+.sync-status{font-size:12px;margin:8px 0;line-height:1.6}

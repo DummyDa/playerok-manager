@@ -95,6 +95,32 @@ test("opening the installed version reloads the page and dismisses only that com
   await expect(button).toBeVisible();
 });
 
+test("failed background polls keep cached content and show only a quiet status after a sustained failure", async ({ page }) => {
+  await page.clock.install();
+  await mock(page);
+  let failing = false, failures = 0;
+  await page.route("**/api/v1/settings", async route => {
+    if (failing) { failures++; await route.fulfill({ status: 500, contentType: "text/plain", body: "Internal Server Error" }); }
+    else await route.fulfill({ json: settings });
+  });
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Стоп", exact: true })).toBeEnabled();
+  failing = true;
+  await page.clock.fastForward(6000);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.clock.runFor(100);
+  await expect.poll(() => failures).toBeGreaterThan(0);
+  await expect(page.getByText(/Сервер временно недоступен \(HTTP 500\)/)).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Баланс Playerok", exact: true })).toBeVisible();
+  await page.clock.fastForward(11000);
+  await expect(page.getByText("Восстанавливаем связь с сервером. Пока показаны последние полученные данные.")).toBeVisible();
+  failing = false;
+  await page.clock.fastForward(20000);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.clock.runFor(100);
+  await expect(page.getByText("Восстанавливаем связь с сервером. Пока показаны последние полученные данные.")).toHaveCount(0);
+});
+
 test("header stop button resumes automation on the same page without changing feature permissions", async ({ page }) => {
   await mock(page);
   let stopped = false;
