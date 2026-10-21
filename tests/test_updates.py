@@ -64,13 +64,27 @@ def test_install_is_opt_in_pauses_automation_and_deduplicates_clicks(db,client,m
     local(monkeypatch)
     db.put("update","latest",{"latest_commit":LATEST,"checked_at":time.time()})
     source=db.config.root/"scripts/install_update.py";source.parent.mkdir();source.write_text("# fake updater")
+    (db.config.data/"processes.json").write_text(json.dumps({"heartbeat":time.time()}))
     popen=Mock();monkeypatch.setattr(updates.subprocess,"Popen",popen)
     for _ in range(2):assert client.post("/api/v1/updates/install",json={"commit":LATEST}).status_code==200
-    assert popen.call_count==1
+    popen.assert_not_called()  # Only the launcher may own the installer process.
     assert db.settings()["emergency_stop"]
     assert "dry_run" not in db.settings()
     assert updates.read_progress(db)["state"]=="QUEUED"
-    assert LATEST in popen.call_args.args[0]
+    request=json.loads((db.config.data/"updates/request.json").read_text())
+    assert request["target"]==LATEST and request["previous"]==CURRENT
+
+def test_launcher_starts_updater_once_as_a_sibling_of_api(db,monkeypatch):
+    from scripts import launcher
+    folder=db.config.data/"updates";folder.mkdir()
+    (folder/"runner.py").write_text("# test runner")
+    (folder/"request.json").write_text(json.dumps({"target":LATEST,"previous":CURRENT,"created_at":time.time()}))
+    monkeypatch.setattr(launcher,"ROOT",db.config.root);monkeypatch.setattr(launcher,"DATA",db.config.data)
+    popen=Mock();monkeypatch.setattr(launcher.subprocess,"Popen",popen)
+    assert launcher.launch_pending_update()
+    assert not launcher.launch_pending_update()
+    assert popen.call_count==1 and LATEST in popen.call_args.args[0]
+    assert not (folder/"request.json").exists()
 
 def test_runner_rejects_changed_upstream_before_stopping(tmp_path,monkeypatch):
     monkeypatch.setattr(runner.shutil,"which",lambda name:"git")

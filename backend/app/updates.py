@@ -75,6 +75,12 @@ def request_install(db,sha):
     if not state["install_supported"]:raise ValueError(state["install_reason"])
     if not state["available"] or sha!=state.get("latest_commit"):raise ValueError("Список обновлений изменился. Проверьте обновления заново.")
     if not state.get("checked_at") or time.time()-state["checked_at"]>3600:raise ValueError("Проверка обновлений устарела. Повторите проверку.")
+    try:
+        launcher=json.loads((db.config.data/"processes.json").read_text())
+        if launcher.get("stopped") or time.time()-launcher.get("heartbeat",0)>10:raise ValueError()
+    except (OSError,ValueError):raise ValueError("Для обновления запустите приложение через run.bat")
+    source=db.config.root/"scripts/install_update.py"
+    if not source.is_file():raise ValueError("Установщик отсутствует. Восстановите файлы приложения.")
     # Serialize repeated clicks across API threads/processes with SQLite's write lock.
     with db.engine.connect() as connection:
         connection.exec_driver_sql("BEGIN IMMEDIATE")
@@ -86,16 +92,13 @@ def request_install(db,sha):
         write_progress(db,{"state":"QUEUED","target":sha,"message":"Обновление готовится. Панель временно перезапустится."})
         connection.commit()
     db.configure(emergency_stop=True)
-    source=db.config.root/"scripts/install_update.py"
-    runner=db.config.data/"updates/runner.py";shutil.copyfile(source,runner)
-    log=(db.config.data/"updates/install.log").open("ab")
     try:
-        flags=(subprocess.CREATE_NO_WINDOW|subprocess.CREATE_NEW_PROCESS_GROUP) if os.name=="nt" else 0
-        subprocess.Popen([sys.executable,str(runner),"--root",str(db.config.root),"--target",sha,"--previous",state["current_commit"]],
-                         cwd=db.config.root,stdout=log,stderr=log,creationflags=flags,start_new_session=os.name!="nt")
+        runner=db.config.data/"updates/runner.py";shutil.copyfile(source,runner)
+        request=runner.with_name("request.json");temporary=request.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"target":sha,"previous":state["current_commit"],"created_at":time.time()}),encoding="utf-8")
+        temporary.replace(request)
     except Exception:
         write_progress(db,{"state":"FAILED","message":"Не удалось запустить установщик. Приложение продолжает работу."});raise ValueError("Не удалось запустить установщик")
-    finally:log.close()
     return {"started":True}
 
 class UpdateTarget(Strict):commit:str=Field(pattern=r"^[0-9a-f]{40}$")

@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import socket
+import re
 import subprocess
 import sys
 if hasattr(sys.stdout,"reconfigure"):sys.stdout.reconfigure(encoding="utf-8")
@@ -22,6 +23,30 @@ def available(port):
 def state():
     try:return json.loads(STATE.read_text())
     except Exception:return {}
+
+def launch_pending_update():
+    """Spawn as a sibling of API, so Windows taskkill /T cannot kill the updater."""
+    request=DATA/"updates/request.json"
+    if not request.exists():return False
+    claimed=request.with_name("dispatched.json")
+    request.replace(claimed)
+    try:
+        data=json.loads(claimed.read_text(encoding="utf-8"))
+        if not all(re.fullmatch(r"[0-9a-f]{40}",data.get(k,"")) for k in ("target","previous")):raise ValueError("Invalid update request")
+        if not 0<=time.time()-data.get("created_at",0)<=600:raise ValueError("Update request expired")
+        runner=DATA/"updates/runner.py"
+        if not runner.is_file():raise ValueError("Missing installer")
+        with (DATA/"updates/install.log").open("ab") as output:
+            flags=(subprocess.CREATE_NO_WINDOW|subprocess.CREATE_NEW_PROCESS_GROUP) if os.name=="nt" else 0
+            subprocess.Popen([sys.executable,"-u",str(runner),"--root",str(ROOT),"--target",data["target"],"--previous",data["previous"]],
+                             cwd=ROOT,stdout=output,stderr=output,creationflags=flags,start_new_session=os.name!="nt")
+        return True
+    except Exception:
+        from backend.app.updates import write_progress
+        from backend.app.db import Database
+        from backend.app.config import Config
+        write_progress(Database(Config(ROOT)),{"state":"FAILED","message":"Не удалось запустить установщик. Перезапустите приложение и повторите проверку."})
+        return False
 
 def supervise():
     DATA.mkdir(exist_ok=True)
@@ -58,6 +83,7 @@ def supervise():
             for name in ["frontend","worker"]:processes[name]=spawn(name)
             while not (DATA/"stop.request").exists():
                 STATE.write_text(json.dumps({"supervisor":os.getpid(),"heartbeat":time.time(),"services":{k:{"pid":p.pid,"running":p.poll() is None} for k,p in processes.items()}}))
+                launch_pending_update()
                 for name,p in list(processes.items()):
                     if p.poll() is not None:
                         restarts[name]+=1

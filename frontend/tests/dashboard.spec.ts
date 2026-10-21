@@ -79,6 +79,22 @@ test("removed preview mode has no switch and calculation remains a preview", asy
   await expect(page.getByText("Автоматическое изменение цен", { exact: true })).toBeVisible();
 });
 
+test("opening the installed version reloads the page and dismisses only that completion notice", async ({ page }) => {
+  await mock(page);
+  let completed = Date.now() / 1000;
+  await page.route("**/api/v1/updates", route => route.fulfill({ json: { available: false, progress: { state: "COMPLETE", installed_commit: "b".repeat(40), updated_at: completed, message: "Обновление установлено" } } }));
+  await page.goto("/settings");
+  const button = page.getByRole("button", { name: "Открыть новую версию", exact: true });
+  await expect(button).toBeVisible();
+  await Promise.all([page.waitForEvent("load"), button.click()]);
+  await expect(button).toHaveCount(0);
+  await page.reload();
+  await expect(button).toHaveCount(0);
+  completed += 1;
+  await page.reload();
+  await expect(button).toBeVisible();
+});
+
 test("header stop button resumes automation on the same page without changing feature permissions", async ({ page }) => {
   await mock(page);
   let stopped = false;
