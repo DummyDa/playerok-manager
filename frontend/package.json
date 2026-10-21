@@ -1,0 +1,31 @@
+{
+  "name": "playerok-manager-2",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1 --port 3100",
+    "build": "next build --webpack",
+    "start": "next start --hostname 127.0.0.1 --port 3100",
+    "typecheck": "tsc --noEmit",
+    "generate:api": "openapi-typescript ../data/openapi.json -o lib/openapi.d.ts",
+    "test": "playwright test"
+  },
+  "dependencies": {
+    "next": "16.4.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "lucide-react": "^0.468.0",
+    "swr": "^2.3.0",
+    "openapi-fetch": "^0.15.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/node": "^24.0.0",
+    "tailwindcss": "4.3.3",
+    "@tailwindcss/postcss": "4.3.3",
+    "openapi-typescript": "^7.10.0",
+    "@playwright/test": "^1.58.0"
+  }
+}

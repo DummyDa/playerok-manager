@@ -1,0 +1,14 @@
+fastapi>=0.115,<1
+uvicorn>=0.34,<1
+sqlalchemy>=2.0,<3
+alembic>=1.14,<2
+requests[socks]>=2.32,<3
+cryptography>=44
+python-multipart>=0.0.20
+telethon>=1.36,<2
+python-socks>=2.4
+tqdm>=4.66,<5
+curl-cffi>=0.13,<1
+httpx>=0.28,<1
+pytest>=8,<10
+git+https://github.com/alleexxeeyy/PlayerokAPI.git@52e4c740eb084d75dd063ff025acc3e3a0569a52
