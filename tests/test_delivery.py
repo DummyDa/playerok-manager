@@ -8,7 +8,7 @@ from backend.app.service import Service
 from backend.app.operations import recover
 
 def test_recipient_change_blocks_before_payment_or_transfer(db,monkeypatch):
-    db.configure(dry_run=False,transfers_enabled=True)
+    db.configure(transfers_enabled=True)
     c=Mrkt(db)
     telegram=SimpleNamespace(get_entity=AsyncMock(return_value=object()),get_input_entity=AsyncMock(return_value=types.InputPeerUser(user_id=999,access_hash=1)))
     def run(operation):return asyncio.run(operation(telegram))
@@ -43,7 +43,7 @@ def test_finance_pair_snapshot_survives_lot_rebinding(db):
     assert db.list("ledger")[0]["pair_id"]=="old"
 
 def test_manual_hold_survives_completion_of_an_inflight_purchase(db):
-    db.configure(dry_run=False,purchases_enabled=True,transfers_enabled=True,delivery_tested=True)
+    db.configure(purchases_enabled=True,transfers_enabled=True,delivery_tested=True)
     db.put("order","o",{"stage":"PURCHASED","manual_hold":True,"mrkt_gift_id":"g"})
     Service(db).process_order("o")
     assert db.get("order","o")["stage"]=="MANUAL"
@@ -51,7 +51,7 @@ def test_manual_hold_survives_completion_of_an_inflight_purchase(db):
 
 @pytest.mark.parametrize("stage",["DISCOVERED","AWAITING_ENABLE","WAITING_DATA","CHECK_PRICE","PURCHASED","WITHDRAWN","TRANSFERRED"])
 def test_regular_product_never_touches_mrkt_even_with_automation_enabled(db,monkeypatch,stage):
-    db.configure(dry_run=False,purchases_enabled=True,transfers_enabled=True,delivery_tested=True)
+    db.configure(purchases_enabled=True,transfers_enabled=True,delivery_tested=True)
     # Explicit manual mode takes precedence over any old or mistaken pair binding.
     db.put("lot","robux",{"delivery_mode":"manual","pair_id":"old-pair"})
     db.put("order","o",{"stage":stage,"lot_id":"robux","recipient":"buyer"})
@@ -66,7 +66,7 @@ def test_regular_product_never_touches_mrkt_even_with_automation_enabled(db,monk
 
 @pytest.mark.parametrize("action",["buy","withdraw","transfer","mark_sent"])
 def test_queued_nft_operations_reject_regular_product(db,action):
-    db.configure(dry_run=False,purchases_enabled=True,transfers_enabled=True,delivery_tested=True)
+    db.configure(purchases_enabled=True,transfers_enabled=True,delivery_tested=True)
     db.put("lot","l",{"title":"Regular product"})
     db.put("order","o",{"stage":"PURCHASING","lot_id":"l"})
     svc=Service(db);svc.mrkt=Mock()

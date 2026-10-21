@@ -10,6 +10,5 @@ def is_nft_lot(lot):
 
 def gate(db, feature=None):
     s=db.settings()
-    if s["dry_run"]:raise WriteBlocked("Dry Run: реальные изменения запрещены")
     if s["emergency_stop"]:raise WriteBlocked("Автоматизация аварийно остановлена")
     if feature and not s.get(feature+"_enabled"):raise WriteBlocked("Операция выключена в настройках")

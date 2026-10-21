@@ -19,12 +19,12 @@ class Worker:
         expire(self.db)
         s=self.db.settings()
         intervals={"check":300,"sync_lots":300,"fx":300,"quotes":s["quote_interval"],"competitors":s["competitor_interval"],
-                   "orders":60,"bot":5,"promotions":30,"backup":86400}
+                   "orders":60,"bot":5,"promotions":30,"backup":86400,"check_updates":900}
         for kind,interval in intervals.items():
             if kind in {"sync_lots","orders","competitors"} and not self.db.secret("playerok_cookies"):continue
             if kind=="quotes" and not has_user_session(self.db):continue
             if kind=="bot" and not s["notifications_enabled"]:continue
-            if kind=="promotions" and (s["dry_run"] or not s["promotions_enabled"]):continue
+            if kind=="promotions" and (s["emergency_stop"] or not s["promotions_enabled"]):continue
             record=self.db.get("clock",kind)
             if not record or record.get("next",0)<=time.time():
                 self.db.enqueue(kind)
@@ -76,6 +76,9 @@ class Worker:
             result=step(self.db,p["flow_id"],p["action"])
             self.service.mrkt.token=None
             return result
+        if kind=="check_updates":
+            from .updates import check
+            return check(self.db)
         service=self.service
         actions={"check":lambda:service.check(p.get("name","all")),"sync_lots":service.sync_lots,"fx":service.refresh_fx,
             "quotes":service.quotes,"quote":lambda:service.quote(p["pair_id"],True),"catalog":service.catalog,"models":lambda:service.models(p["collection"]),

@@ -29,7 +29,7 @@ def test_import_is_readonly_idempotent_and_safe(tmp_path):
     assert db.secret("playerok_cookies")=="cookie=secret"
     assert len(db.list("processed"))==1
     assert db.get("order","manual")["stage"]=="MANUAL"
-    assert db.settings()["dry_run"] is True
+    assert "dry_run" not in db.settings()
     assert db.settings()["purchases_enabled"] is False
     assert not (target/".env").exists()
     assert db.config.get("TELEGRAM_BOT_TOKEN")=="private-token"

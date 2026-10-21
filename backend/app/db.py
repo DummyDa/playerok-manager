@@ -48,7 +48,7 @@ class Task(Base):
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 DEFAULTS = {
-    "dry_run": True, "emergency_stop": False, "repricing_enabled": False,
+    "emergency_stop": False, "repricing_enabled": False,
     "purchases_enabled": False, "transfers_enabled": False, "promotions_enabled": False,
     "notifications_enabled": False, "delivery_tested": False,
     "stars_rub": None, "transfer_stars_reserve": 25, "purchase_limit_rub": "0",
@@ -103,7 +103,9 @@ class Database:
             else: s.add(Entity(kind=kind, id=str(id), data=clean))
         return self.get(kind, id)
 
-    def settings(self): return {**DEFAULTS, **(self.get("settings") or {})}
+    def settings(self):
+        data={**DEFAULTS, **(self.get("settings") or {})};data.pop("dry_run",None)
+        return data
 
     def patch_existing(self,kind,id,data):
         with self.tx() as s:
@@ -160,7 +162,11 @@ class Database:
             with self.sessions() as s: return s.scalar(select(Task.id).where(Task.dedupe == key))
 
     def initialize(self):
-        self.configure(**{**DEFAULTS, **(self.get("settings") or {})})
+        previous=self.get("settings") or {}
+        legacy_preview=previous.pop("dry_run",False)
+        if legacy_preview:
+            previous.update(emergency_stop=True,repricing_enabled=False,purchases_enabled=False,transfers_enabled=False,promotions_enabled=False)
+        self.put("settings","default",{**DEFAULTS,**previous},merge=False)
         if not self.get("fees"):
             self.put("fees", "default", {"name": "Основные комиссии", "configured": False, "fees": []})
         from .runtime_config import import_environment

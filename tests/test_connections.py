@@ -76,10 +76,10 @@ def test_token_replacement_resets_owner_and_polling(db,client):
     assert db.settings()["bot_offset"] is None
     assert not db.settings()["notifications_enabled"]
 
-def test_connection_change_requires_dry_run_and_csrf(db,client):
+def test_connection_change_requires_pausing_active_trading_and_csrf(db,client):
     client.headers.pop("X-CSRF-Token")
     assert client.patch("/api/v1/connections/config",json={"bot_token":TOKEN}).status_code==403
-    db.configure(dry_run=False)
+    db.configure(purchases_enabled=True)
     r=client.post("/api/v1/auth/login",json={"password":"local-admin-password"})
     client.headers["X-CSRF-Token"]=r.json()["csrf"]
     assert client.patch("/api/v1/connections/config",json={"bot_token":TOKEN}).status_code==400
@@ -149,7 +149,7 @@ def test_restart_continues_login_challenge_from_encrypted_state(db):
 
 def test_disconnect_disables_new_trades_and_keeps_history(db,client):
     keys(db);save_config(db,{"TELEGRAM_USER_SESSION":valid_session()})
-    db.configure(purchases_enabled=True,transfers_enabled=True,delivery_tested=True)
+    db.configure(purchases_enabled=True,transfers_enabled=True,delivery_tested=True,emergency_stop=True)
     db.put("ledger","previous",{"amount_rub":"25"})
     assert client.delete("/api/v1/connections/telegram-user").status_code==200
     assert not has_user_session(db)

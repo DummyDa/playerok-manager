@@ -9,14 +9,14 @@ from backend.app.service import Service
 from backend.app.worker import Worker,worker_lock
 from backend.app.integrations.clients import WriteBlocked,GuardSession,Mrkt,gate
 
-def test_dryrun_enforced_at_service_and_transport(db):
+def test_emergency_stop_enforced_at_service_and_transport(db):
+    db.configure(emergency_stop=True)
     op=new_operation(db,"update",{"lot_id":"l","changes":{"price":1}})
     with pytest.raises(WriteBlocked):submit(db,op["id"])
     with pytest.raises(WriteBlocked):GuardSession(db).post("https://playerok.com/graphql",json={})
     with pytest.raises(WriteBlocked):Mrkt(db).buy({"id":"gift","salePrice":1})
 
 def test_concurrent_confirmation_creates_one_task(db):
-    db.configure(dry_run=False)
     op=new_operation(db,"update",{"lot_id":"l","changes":{"price":1}})
     with ThreadPoolExecutor(max_workers=2) as pool:
         results=list(pool.map(lambda _:submit(db,op["id"]),range(2)))
@@ -74,11 +74,11 @@ def test_ledger_is_idempotent_and_immutable(db):
     assert db.list("ledger")[0]["amount_rub"]=="100"
 
 def test_emergency_stop_blocks_execution(db):
-    db.configure(dry_run=False,emergency_stop=True)
+    db.configure(emergency_stop=True)
     with pytest.raises(WriteBlocked):gate(db)
 
 def test_monetary_timeout_is_unknown_not_retried(db,monkeypatch):
-    db.configure(dry_run=False,promotions_enabled=True,daily_promotion_limit_rub="100")
+    db.configure(promotions_enabled=True,daily_promotion_limit_rub="100")
     db.put("lot","lot",{"status":"APPROVED","price":100,"slug":"slug"})
     op=new_operation(db,"promotion",{"lot_id":"lot"},{"status_id":"premium","cost_rub":"9","lot_price":100})
     submit(db,op["id"])
@@ -92,7 +92,7 @@ def test_monetary_timeout_is_unknown_not_retried(db,monkeypatch):
     assert db.get("operation",op["id"])["state"]=="UNKNOWN"
 
 def test_tariff_change_aborts_without_payment(db,monkeypatch):
-    db.configure(dry_run=False,promotions_enabled=True,daily_promotion_limit_rub="100")
+    db.configure(promotions_enabled=True,daily_promotion_limit_rub="100")
     db.put("lot","l",{"status":"APPROVED","price":100})
     op=new_operation(db,"promotion",{"lot_id":"l"},{"status_id":"old","cost_rub":"9","lot_price":100});submit(db,op["id"])
     from backend.app import service
@@ -103,7 +103,7 @@ def test_tariff_change_aborts_without_payment(db,monkeypatch):
     assert db.get("operation",op["id"])["state"]=="FAILED"
 
 def test_daily_premium_budget_blocks(db,monkeypatch):
-    db.configure(dry_run=False,promotions_enabled=True,daily_promotion_limit_rub="10")
+    db.configure(promotions_enabled=True,daily_promotion_limit_rub="10")
     db.put("lot","l",{"status":"APPROVED","price":100})
     svc=Service(db);svc.ledger("previous","promotion",9,"l")
     op=new_operation(db,"promotion",{"lot_id":"l"},{"status_id":"p","cost_rub":"9","lot_price":100});submit(db,op["id"])

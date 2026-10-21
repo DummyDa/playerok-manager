@@ -15,4 +15,4 @@ if __name__=="__main__":
     run([str(python),"scripts/export_openapi.py"])
     run([npm,"run","generate:api"],ROOT/"frontend")
     run([npm,"run","build"],ROOT/"frontend")
-    print("Готово. Запустите run.bat. Режим по умолчанию — Dry Run.")
+    print("Готово. Запустите run.bat. Автоматические торговые действия по умолчанию выключены.")

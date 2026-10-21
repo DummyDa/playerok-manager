@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 const lotId = "own-lot";
-const settings = { dry_run: true, emergency_stop: false, repricing_enabled: false, purchases_enabled: false, transfers_enabled: false, promotions_enabled: false, notifications_enabled: false, delivery_tested: false,
+const settings = { emergency_stop: false, repricing_enabled: false, purchases_enabled: false, transfers_enabled: false, promotions_enabled: false, notifications_enabled: false, delivery_tested: false,
   stars_rub: null, transfer_stars_reserve: 25, purchase_limit_rub: "0", daily_purchase_limit_rub: "0", daily_promotion_limit_rub: "0", quote_interval: 3600, competitor_interval: 900, quote_max_age: 7200,
   description_template: "Описание магазина", playerok_username: "ExampleStore", playerok_account_id: "seller", owner_chat_id: 1, orders_baselined: false };
 const pair = { id: "pair", collection: "Liberty Figure", model: "Obsidian" };
@@ -40,15 +40,66 @@ test("dashboard connection setup completes Telegram code and 2FA steps", async (
   await page.screenshot({ path: "../data/qa/connection-settings.png", fullPage: true });
 });
 
-test("secret fields stay empty and settings changes are blocked outside Dry Run", async ({ page }) => {
+test("secret fields stay empty and account changes require pausing active trading", async ({ page }) => {
   await mock(page);
-  await page.route("**/api/v1/settings", route => route.fulfill({ json: { ...settings, dry_run: false } }));
+  await page.route("**/api/v1/settings", route => route.fulfill({ json: { ...settings, purchases_enabled: true } }));
   await page.route("**/api/v1/connections/config", route => route.fulfill({ json: { bot_configured: true, api_hash_configured: true, api_id: "12345", owner_username: "example_owner" } }));
   await page.goto("/settings");
   await expect(page.getByLabel("Токен Telegram-бота", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("Telegram API Hash", { exact: true })).toHaveValue("");
   await expect(page.getByRole("button", { name: "Сохранить бота", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Сохранить ключи", exact: true })).toBeDisabled();
+});
+
+test("update banner can be postponed and install requires a separate confirmation", async ({ page }) => {
+  await mock(page);
+  const writes: string[] = [];
+  let dismissed = false;
+  await page.route("**/api/v1/updates**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (route.request().method() !== "GET") writes.push(path);
+    if (path.endsWith("/dismiss")) dismissed = true;
+    await route.fulfill({ json: { available: true, dismissed, current_commit: "a".repeat(40), latest_commit: "b".repeat(40), message: "Удобные обновления", commit_url: "https://github.com/DummyDa/playerok-manager/commit/" + "b".repeat(40), install_supported: true, progress: { state: "IDLE" } } });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Посмотреть обновление", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Установить обновление?" })).toBeVisible();
+  expect(writes.some(path => path.endsWith("/install"))).toBe(false);
+  await page.getByRole("button", { name: "Не сейчас", exact: true }).click();
+  await page.getByRole("button", { name: "Позже", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Обновление приложения" })).toHaveCount(0);
+  expect(writes.some(path => path.endsWith("/install"))).toBe(false);
+});
+
+test("removed preview mode has no switch and calculation remains a preview", async ({ page }) => {
+  await mock(page);
+  await page.goto("/settings");
+  await expect(page.getByText("Dry Run", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Обновления приложения", exact: true })).toBeVisible();
+  await expect(page.getByText("Автоматическое изменение цен", { exact: true })).toBeVisible();
+});
+
+test("header stop button resumes automation on the same page without changing feature permissions", async ({ page }) => {
+  await mock(page);
+  let stopped = false;
+  const patches: any[] = [];
+  await page.route("**/api/v1/settings", async route => {
+    if (route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON(); patches.push(body); stopped = body.emergency_stop;
+    }
+    await route.fulfill({ json: { ...settings, emergency_stop: stopped } });
+  });
+  await page.route("**/api/v1/automation/stop", async route => {
+    stopped = true; await route.fulfill({ json: { emergency_stop: true } });
+  });
+  await page.goto("/lots");
+  await page.getByRole("button", { name: "Стоп", exact: true }).click();
+  const resume = page.getByRole("button", { name: "Возобновить", exact: true });
+  await expect(resume).toBeEnabled();
+  await resume.click();
+  await expect(page.getByRole("button", { name: "Стоп", exact: true })).toBeEnabled();
+  await expect(page).toHaveURL(/\/lots$/);
+  expect(patches).toEqual([{ emergency_stop: false }]);
 });
 
 async function mock(page: Page) {
@@ -125,7 +176,7 @@ test("missing Playerok balance is not presented as zero", async ({ page }) => {
   await expect(panel.locator(".playerok-balance-grid strong")).toHaveText(["—", "—", "—"]);
 });
 
-test("premium preview cannot purchase while Dry Run is active", async ({ page }) => {
+test("premium preview cannot purchase when promotions are disabled", async ({ page }) => {
   const writes = await mock(page);
   await page.goto("/lots");
   await page.getByRole("button", { name: "Поднять Liberty Figure — Obsidian", exact: true }).click();

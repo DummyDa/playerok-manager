@@ -32,6 +32,8 @@ def create_app(db:Database|None=None):
     app.state.db=db
     from .connection_api import router as connection_router
     app.include_router(connection_router(db))
+    from .updates import router as update_router
+    app.include_router(update_router(db))
     public_origin=db.config.get("PUBLIC_ORIGIN").rstrip("/")
     public_url=urlsplit(public_origin)
     if public_origin and (public_url.scheme!="https" or not public_url.hostname or public_url.path or public_url.query or public_url.fragment or public_url.username):
@@ -137,7 +139,7 @@ def create_app(db:Database|None=None):
         if any(v is None for k,v in data.items() if k!="stars_rub"):raise ValueError("Пустое значение настройки")
         if data.get("notifications_enabled") and old_running():raise ValueError("Старый Playerok Manager запущен на порту 8000. Сначала остановите его, чтобы не запускать двух ботов.")
         if data.get("notifications_enabled") and (not db.config.get("TELEGRAM_BOT_TOKEN") or not (db.settings().get("owner_chat_id") or db.config.get("OWNER_TELEGRAM_USERNAME"))):raise ValueError("Сначала сохраните токен бота и username или Telegram ID владельца")
-        if data.get("dry_run") is False and old_running():raise ValueError("Перед выходом из Dry Run остановите старый проект: два исполнителя могут обработать один заказ.")
+        if any(data.get(k) for k in ("repricing_enabled","purchases_enabled","transfers_enabled","promotions_enabled")) and old_running():raise ValueError("Перед включением автоматизации остановите старый проект: два исполнителя могут обработать один заказ.")
         if data.get("delivery_tested") and not db.settings()["delivery_tested"]:
             db.log("delivery_attestation","Владелец подтвердил отдельную проверку выдачи","Это подтверждение владельца, а не результат автоматического теста")
         db.configure(**data)
@@ -163,8 +165,8 @@ def create_app(db:Database|None=None):
 
     @app.put("/api/v1/connections/playerok")
     def cookies(payload:schemas.Cookies)->dict:
-        from .connection_api import ensure_dry
-        ensure_dry(db)
+        from .connection_api import ensure_connection_change_safe
+        ensure_connection_change_safe(db)
         db.secret("playerok_cookies",payload.cookies.strip())
         db.put("connection","playerok",{"status":"NOT_CHECKED"})
         return {"task_id":db.enqueue("check",{"name":"playerok"},key="check:playerok")}

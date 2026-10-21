@@ -12,7 +12,6 @@ class PasswordChange(Strict):
     new_password:str=Field(min_length=10,max_length=128)
 class Cookies(Strict): cookies:str=Field(min_length=10,max_length=20000)
 class Settings(Strict):
-    dry_run:bool|None=None
     emergency_stop:bool|None=None
     repricing_enabled:bool|None=None
     purchases_enabled:bool|None=None

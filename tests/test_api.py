@@ -15,8 +15,8 @@ def test_auth_required_and_csrf_enforced(client):
     assert client.get("/api/v1/settings").status_code==401
     headers=authenticate(client)
     assert client.get("/api/v1/settings").status_code==200
-    assert client.patch("/api/v1/settings",json={"dry_run":False}).status_code==403
-    assert client.patch("/api/v1/settings",headers={**headers,"Origin":"https://evil.example"},json={"dry_run":False}).status_code==403
+    assert client.patch("/api/v1/settings",json={"repricing_enabled":True}).status_code==403
+    assert client.patch("/api/v1/settings",headers={**headers,"Origin":"https://evil.example"},json={"repricing_enabled":True}).status_code==403
     assert client.patch("/api/v1/settings",headers=headers,json={"stars_rub":"2"}).status_code==200
 
 def test_https_origin_is_exact_and_keeps_csrf(db):
@@ -54,7 +54,7 @@ def test_api_does_not_return_credentials(db,client):
 
 def test_trade_defaults_are_safe(client):
     authenticate(client);s=client.get("/api/v1/settings").json()
-    assert s["dry_run"] is True
+    assert "dry_run" not in s
     assert all(s[k] is False for k in ["repricing_enabled","purchases_enabled","transfers_enabled","promotions_enabled","notifications_enabled","delivery_tested"])
     assert s["daily_purchase_limit_rub"]=="0"
 
@@ -151,7 +151,7 @@ def test_notifications_cannot_conflict_with_old_bot(client,monkeypatch):
     monkeypatch.setattr("backend.app.main.old_running",lambda:True)
     r=client.patch("/api/v1/settings",headers=headers,json={"notifications_enabled":True})
     assert r.status_code==400
-    assert client.patch("/api/v1/settings",headers=headers,json={"dry_run":False}).status_code==400
+    assert client.patch("/api/v1/settings",headers=headers,json={"repricing_enabled":True}).status_code==400
 
 def test_unverified_lot_operations_explicitly_manual(client):
     authenticate(client)
@@ -163,7 +163,7 @@ def test_unverified_lot_operations_explicitly_manual(client):
 def test_settings_validation_and_manual_order_protection(db,client):
     headers=authenticate(client)
     assert client.patch("/api/v1/settings",headers=headers,json={"purchase_limit_rub":-1}).status_code==422
-    assert client.patch("/api/v1/settings",headers=headers,json={"dry_run":None}).status_code==400
+    assert client.patch("/api/v1/settings",headers=headers,json={"emergency_stop":None}).status_code==400
     db.put("order","old",{"stage":"MANUAL"})
     assert client.post("/api/v1/orders/old/process",headers=headers).status_code==400
 

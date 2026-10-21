@@ -26,7 +26,8 @@ export default function ConnectionSetup({ act, busy }: Actions) {
   const [confirm, setConfirm] = useState<"playerok" | "telegram-user" | "bot" | null>(null);
   const c = config.data || {};
   const state = login.data?.state || "IDLE";
-  const locked = busy || !settings.data?.dry_run;
+  const trading = settings.data && ["repricing_enabled", "purchases_enabled", "transfers_enabled", "promotions_enabled"].some(key => settings.data[key]);
+  const locked = busy || (trading && !settings.data?.emergency_stop);
   const signingIn = activeStates.includes(state);
   useEffect(() => {
     if (config.data && !draft) setDraft({ owner_username: c.owner_username || "", owner_chat_id: c.owner_chat_id || "", api_id: c.api_id || "", playerok_user_agent: c.playerok_user_agent || "", playerok_request_timeout: c.playerok_request_timeout || 20, public_origin: c.public_origin || "", mrkt_api_url: c.mrkt_api_url || "https://api.tgmrkt.io/api/v1" });
@@ -49,7 +50,7 @@ export default function ConnectionSetup({ act, busy }: Actions) {
   if (!draft) return <Panel title="Подключения"><div className="loading"><Spinner />Загрузка настроек</div></Panel>;
   return <>
     <div className="connection-guide"><BookOpen size={18} /><div><strong>Подключите площадки без редактирования файлов</strong><span>Секреты сохраняются локально в зашифрованном виде. Пустое поле токена или API Hash оставляет сохранённое значение.</span></div><a className="text-link" href="/guide.html" target="_blank" rel="noreferrer">Пошаговая инструкция</a></div>
-    {!settings.data?.dry_run && <Notice>Для смены аккаунтов, токенов и сетевых параметров сначала включите и сохраните Dry Run ниже.</Notice>}
+    {trading && !settings.data?.emergency_stop && <Notice>Для смены подключений приостановите автоматизацию кнопкой «Стоп».</Notice>}
     <div className="two-columns connection-setup">
       <Panel title="1. Playerok" subtitle="Cookies аккаунта продавца" action={<State value={connection("playerok")?.status || "NOT_CONFIGURED"} />}>
         <div className="form-pad">

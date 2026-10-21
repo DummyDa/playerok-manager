@@ -80,8 +80,10 @@ class LoginInput(Strict):
 
 class LoginFlow(Strict):flow_id:str=Field(min_length=20,max_length=64)
 
-def ensure_dry(db):
-    if not db.settings()["dry_run"]:raise ValueError("Для смены подключений включите Dry Run")
+def ensure_connection_change_safe(db):
+    settings=db.settings()
+    if not settings["emergency_stop"] and any(settings[k] for k in ("repricing_enabled","purchases_enabled","transfers_enabled","promotions_enabled")):
+        raise ValueError("Для смены подключений приостановите автоматизацию кнопкой «Стоп»")
 
 def router(db):
     routes=APIRouter(prefix="/api/v1/connections")
@@ -90,7 +92,7 @@ def router(db):
 
     @routes.patch("/config")
     def update_config(payload:ConnectionSettings)->dict:
-        ensure_dry(db)
+        ensure_connection_change_safe(db)
         data=payload.model_dump(exclude_unset=True,exclude_none=True)
         if set(data)&{"api_id","api_hash","mtproto_proxy"} and telegram_login.status(db)["state"] not in telegram_login.TERMINAL|{"IDLE"}:
             raise ValueError("Сначала завершите или отмените текущий вход в Telegram")
@@ -113,20 +115,20 @@ def router(db):
 
     @routes.post("/telegram-user/start")
     def login_start(payload:LoginStart)->dict:
-        ensure_dry(db)
+        ensure_connection_change_safe(db)
         if not db.config.get("MRKT_TELEGRAM_API_ID") or not db.config.get("MRKT_TELEGRAM_API_HASH"):raise ValueError("Сначала сохраните Telegram API ID и API Hash")
         return telegram_login.begin(db,payload.phone)
 
     @routes.post("/telegram-user/code")
     def login_code(payload:LoginInput)->dict:
-        ensure_dry(db)
+        ensure_connection_change_safe(db)
         code=re.sub(r"\s","",payload.value)
         if not re.fullmatch(r"\d{4,8}",code):raise ValueError("Введите цифровой код из Telegram")
         return telegram_login.provide(db,payload.flow_id,"code",code)
 
     @routes.post("/telegram-user/password")
     def login_password(payload:LoginInput)->dict:
-        ensure_dry(db)
+        ensure_connection_change_safe(db)
         return telegram_login.provide(db,payload.flow_id,"password",payload.value)
 
     @routes.post("/telegram-user/cancel")
@@ -134,7 +136,7 @@ def router(db):
 
     @routes.delete("/telegram-user")
     def user_disconnect()->dict:
-        ensure_dry(db)
+        ensure_connection_change_safe(db)
         if not telegram_login.status(db)["state"] in {"IDLE","AUTHORIZED","ERROR","CANCELLED","EXPIRED"}:raise ValueError("Сначала отмените текущий вход")
         db.configure(purchases_enabled=False,transfers_enabled=False,delivery_tested=False)
         save_config(db,{"TELEGRAM_USER_SESSION":"","TELEGRAM_SESSION_DISABLED":"1"})
@@ -144,7 +146,7 @@ def router(db):
 
     @routes.delete("/playerok")
     def playerok_disconnect()->dict:
-        ensure_dry(db)
+        ensure_connection_change_safe(db)
         db.forget_secret("playerok_cookies")
         db.configure(repricing_enabled=False,promotions_enabled=False,purchases_enabled=False,transfers_enabled=False,
                      playerok_account_id=None,playerok_username=None,orders_baselined=False)

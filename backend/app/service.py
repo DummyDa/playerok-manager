@@ -191,7 +191,7 @@ class Service:
                 estimate=self.estimate(lot["id"])
                 self.db.put("estimate",lot["id"],{**estimate,"status":"READY"},merge=False)
                 strategy=estimate["strategy"]
-                if settings["dry_run"] or not settings["repricing_enabled"] or not strategy.get("enabled",False): continue
+                if not settings["repricing_enabled"] or not strategy.get("enabled",False): continue
                 if abs(D(estimate["sale_price"])-D(lot.get("price") or 0))<D(strategy.get("change_threshold",1)): continue
                 op=new_operation(self.db,"price",{"lot_id":lot["id"],"price":estimate["sale_price"],"automatic":True},expected=estimate)
                 from .operations import submit
@@ -328,7 +328,7 @@ class Service:
         if not is_nft_lot(self.db.get("lot",order.get("lot_id"))):
             self.db.put("order",id,{"stage":"MANUAL","reason":"Обычный товар: закупка MRKT и автоматическая выдача не применяются"});return
         settings=self.db.settings()
-        if settings["dry_run"] or not settings["purchases_enabled"] or not settings["transfers_enabled"] or not settings["delivery_tested"]:
+        if not settings["purchases_enabled"] or not settings["transfers_enabled"] or not settings["delivery_tested"]:
             self.db.put("order",id,{"stage":"AWAITING_ENABLE","reason":"Реальная закупка и выдача выключены"});return
         gate(self.db)
         stage=order["stage"]
@@ -467,7 +467,7 @@ class Service:
 
     def schedules(self):
         s=self.db.settings()
-        if s["dry_run"] or s["emergency_stop"] or not s["promotions_enabled"]: return
+        if s["emergency_stop"] or not s["promotions_enabled"]: return
         for schedule in self.db.list("promotion_schedule"):
             if not schedule.get("enabled") or schedule.get("next_at",0)>time.time(): continue
             try:
@@ -495,7 +495,7 @@ class Service:
                 bot.request("sendMessage",{"chat_id":chat["id"],"text":"Новые торговые действия остановлены. Уже отправленные операции требуют сверки."})
             elif chat.get("type")=="private" and allowed and command=="/status":
                 s=self.db.settings()
-                bot.request("sendMessage",{"chat_id":chat["id"],"text":f"Dry Run: {'да' if s['dry_run'] else 'нет'}. Аварийная остановка: {'да' if s['emergency_stop'] else 'нет'}. Подробности — в панели."})
+                bot.request("sendMessage",{"chat_id":chat["id"],"text":f"Аварийная остановка: {'да' if s['emergency_stop'] else 'нет'}. Подробности — в панели."})
             self.db.configure(bot_offset=update["update_id"]+1)
         pending=[n for n in self.db.list("notification",1000) if n.get("state")=="PENDING"]
         if pending and self.db.settings().get("owner_chat_id"):
