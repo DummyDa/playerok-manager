@@ -171,6 +171,12 @@ class Database:
             self.put("fees", "default", {"name": "Основные комиссии", "configured": False, "fees": []})
         from .runtime_config import import_environment
         import_environment(self)
+        if not self.get("schema_feature","premium_pricing"):
+            estimates=self.list("estimate",100000)
+            for estimate in estimates:
+                self.put("estimate",estimate["id"],{"status":"STALE","error":"Нужен новый расчёт с учётом премиума"},merge=False)
+            self.put("schema_feature","premium_pricing",{"version":1})
+            if estimates:self.enqueue("reprice_preview")
 
     def fingerprint(self):
         return hashlib.sha256(str(self.config.root).lower().encode()).hexdigest()[:12]

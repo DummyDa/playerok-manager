@@ -1,5 +1,5 @@
 import pytest
-from backend.app.pricing import calculate,PricingError,D
+from backend.app.pricing import calculate,calculate_with_premium,PricingError,D
 
 PROFILE={"configured":True,"fees":[{"name":"фиксированная","type":"fixed","value":"25"},
     {"name":"10%","type":"percent","value":"10","basis":"remaining"},
@@ -43,3 +43,34 @@ def test_non_finite_rejected(value):
 def test_unconfigured_and_impossible_fees_rejected():
     with pytest.raises(PricingError):calculate(100,0,{}, {})
     with pytest.raises(PricingError):calculate(100,0,{"configured":True,"fees":[{"type":"percent","value":100}]},{})
+
+def test_premium_is_separate_from_fees_and_reduces_profit():
+    p={"configured":True,"fees":[{"type":"percent","value":10,"basis":"sale"}]}
+    result=calculate(100,10,p,{"profit_type":"rub","profit_value":20},promotion_rub=50)
+    assert result["sale_price"]==200
+    assert D(result["fees_rub"])==20 and D(result["promotion_rub"])==50
+    assert D(result["profit_rub"])==20
+
+def test_price_dependent_premium_is_quoted_for_final_price():
+    prices=[]
+    def tariff(price):prices.append(price);return D(price)*D(".1")
+    result=calculate_with_premium(100,0,{"configured":True,"fees":[]},{"profit_value":5},tariff)
+    assert result["sale_price"]==117
+    assert prices[-1]==result["sale_price"]
+    assert D(result["promotion_rub"])==D("11.7")
+    assert D(result["profit_rub"])>=5
+
+def test_stepped_premium_and_sale_profit_basis_and_competitor_floor():
+    def tariff(price):return 10 if price<120 else 30
+    p={"configured":True,"fees":[]}
+    result=calculate_with_premium(100,0,p,{"profit_type":"rub","profit_value":15},tariff)
+    assert result["sale_price"]==145 and D(result["promotion_rub"])==30
+    result=calculate_with_premium(100,0,p,{"profit_value":20,"profit_basis":"sale"},lambda price:D(price)*D(".1"),competitor_price=1)
+    assert D(result["profit_rub"])>=D(result["sale_price"])*D(".2")
+    assert result["sale_price"]==143
+    with pytest.raises(PricingError,match="максимум"):
+        calculate_with_premium(100,0,p,{"max_price":110},lambda price:25)
+
+def test_unresolvable_premium_blocks_pricing_instead_of_understating_cost():
+    with pytest.raises(PricingError,match="согласовать"):
+        calculate_with_premium(100,0,{"configured":True,"fees":[]},{},lambda price:price)

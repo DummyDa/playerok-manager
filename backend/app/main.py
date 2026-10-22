@@ -291,9 +291,11 @@ def create_app(db:Database|None=None):
 
     @app.post("/api/v1/pricing/{id}/preview")
     def preview_price(id:str)->dict:
-        # Uses saved quotes only: return validation errors without waiting for the worker.
+        # Configuration failures remain immediate; external tariff reads belong to the worker.
         from .service import Service
-        return Service(db).preview_price(id)
+        from .pricing import PremiumQuoteRequired
+        try:return Service(db).preview_price(id,allow_network=False)
+        except PremiumQuoteRequired:return {"task_id":db.enqueue("preview_price",{"lot_id":id},key="preview_price:"+id)}
 
     @app.get("/api/v1/competitors")
     def competitors()->dict:return {"items":db.list("competitor")}
@@ -338,7 +340,9 @@ def create_app(db:Database|None=None):
     @app.put("/api/v1/promotions/{id}/schedule")
     def promotion_schedule(id:str,payload:schemas.PromotionSchedule)->dict:
         if not db.get("lot",id):raise ValueError("Лот не найден")
-        return db.put("promotion_schedule",id,{**payload.model_dump(mode="json"),"next_at":time.time()+payload.interval})
+        result=db.put("promotion_schedule",id,{**payload.model_dump(mode="json"),"next_at":time.time()+payload.interval})
+        if is_nft_lot(db.get("lot",id)):db.enqueue("reprice_preview")
+        return result
 
     @app.put("/api/v1/promotions/schedules/bulk")
     def bulk_promotion_schedules(payload:schemas.BulkPromotionSchedule)->dict:
@@ -356,6 +360,7 @@ def create_app(db:Database|None=None):
                 if row:row.data={**row.data,**data};row.updated=now
                 else:s.add(Entity(kind="promotion_schedule",id=id,data=data))
         db.log("promotion_schedules","Расписания поднятий сохранены",str(len(ids)))
+        if any(is_nft_lot(db.get("lot",id)) for id in ids):db.enqueue("reprice_preview")
         return {"count":len(ids)}
 
     @app.delete("/api/v1/promotions/{id}/schedule")
@@ -364,6 +369,7 @@ def create_app(db:Database|None=None):
             row=s.get(Entity,("promotion_schedule",id))
             if row:s.delete(row)
         db.log("promotion_schedule_deleted","Расписание поднятий удалено",id)
+        if is_nft_lot(db.get("lot",id)):db.enqueue("reprice_preview")
         return {"deleted":True}
 
     @app.post("/api/v1/promotions/{id}/preview")

@@ -1397,6 +1397,17 @@ export interface components {
              */
             enabled: boolean;
             /**
+             * Premium Mode
+             * @default auto
+             * @enum {string}
+             */
+            premium_mode: "auto" | "include" | "exclude";
+            /**
+             * Premium Purchases Per Sale
+             * @default 1
+             */
+            premium_purchases_per_sale: number;
+            /**
              * Profit Type
              * @default percent
              * @enum {string}

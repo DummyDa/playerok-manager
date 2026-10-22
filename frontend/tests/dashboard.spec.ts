@@ -275,6 +275,29 @@ test("price calculation opens the preview without applying a price", async ({ pa
   expect(writes.some(r => r.path === "/operations/execute")).toBe(false);
 });
 
+test("premium forecast settings save and the exact tariff appears in the calculation", async ({ page }) => {
+  const writes = await mock(page);
+  const estimate = { id: lotId, status: "READY", purchase_rub: "1000", transfer_rub: "50", promotion_rub: "120", premium_included: true, premium_count: 2, premium_unit_rub: "60", sale_price: 1400, profit_rub: "90", current_profit_rub: "-70", fees_rub: "140", ton_rub: "100" };
+  await page.route("**/api/v1/pricing", route => route.fulfill({ json: { strategy: { profit_value: "5" }, items: [estimate] } }));
+  await page.route(`**/api/v1/pricing/${lotId}/preview`, route => route.fulfill({ json: { id: "premium-op", action: "price", state: "PREVIEW", payload: { price: 1400 }, expected: estimate } }));
+  await page.goto("/pricing");
+  await expect(page.getByLabel("Премиум в себестоимости", { exact: true })).toHaveValue("auto");
+  await page.getByLabel("Премиум в себестоимости", { exact: true }).selectOption("include");
+  await page.getByLabel("Поднятий на одну продажу", { exact: true }).fill("2");
+  await page.getByRole("button", { name: "Сохранить стратегию", exact: true }).click();
+  await expect.poll(() => writes.find(w => w.path === "/pricing/strategy")?.body.premium_purchases_per_sale).toBe(2);
+  expect(writes.find(w => w.path === "/pricing/strategy")?.body.premium_mode).toBe("include");
+  const row = page.getByRole("row").filter({ hasText: lot.title });
+  await expect(row.getByRole("cell", { name: "120 ₽", exact: true })).toBeVisible();
+  await expect(row.getByRole("cell", { name: "-70 ₽", exact: true })).toHaveClass("red-text");
+  await row.getByRole("button", { name: "Расчёт", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Применить рассчитанную цену" });
+  await expect(dialog.getByText("Премиум в цене продажи", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("2 поднят. × 60 ₽", { exact: true })).toBeVisible();
+  expect(writes.some(w => w.path === "/operations/execute")).toBe(false);
+  await page.screenshot({ path: "../data/qa/premium-profit-preview.png", fullPage: true });
+});
+
 test("ordinary products keep management controls but have no NFT calculation", async ({ page }) => {
   const writes = await mock(page);
   const ordinary = { ...lot, id: "robux", title: "300 ROBUX", pair_id: null, pair: null, delivery_mode: "manual" };

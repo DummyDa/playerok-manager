@@ -80,6 +80,7 @@ class Worker:
             from .updates import check
             return check(self.db)
         service=self.service
+        if kind=="reprice_preview":return service.reprice(apply=False)
         actions={"check":lambda:service.check(p.get("name","all")),"sync_lots":service.sync_lots,"fx":service.refresh_fx,
             "quotes":service.quotes,"quote":lambda:service.quote(p["pair_id"],True),"catalog":service.catalog,"models":lambda:service.models(p["collection"]),
             "competitors":service.competitors,"competitor":lambda:service.competitor(p["id"]),"reprice":service.reprice,

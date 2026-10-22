@@ -1,6 +1,7 @@
 from decimal import Decimal, ROUND_CEILING, InvalidOperation
 
 class PricingError(ValueError): pass
+class PremiumQuoteRequired(PricingError): pass
 
 def D(value):
     try:
@@ -31,10 +32,10 @@ def net_coefficients(fees, purchase):
     if a <= 0: raise PricingError("Комиссии поглощают всю выручку")
     return a, b
 
-def calculate(purchase_rub, transfer_rub, profile, strategy, competitor_price=None):
+def calculate(purchase_rub, transfer_rub, profile, strategy, competitor_price=None, promotion_rub=0):
     if not profile.get("configured"): raise PricingError("Сначала настройте и подтвердите профиль комиссий")
-    purchase, transfer = D(purchase_rub), D(transfer_rub)
-    if purchase <= 0 or transfer < 0: raise PricingError("Нет достоверной себестоимости")
+    purchase, transfer, promotion = D(purchase_rub), D(transfer_rub), D(promotion_rub)
+    if purchase <= 0 or transfer < 0 or promotion < 0: raise PricingError("Нет достоверной себестоимости")
     a, b = net_coefficients(profile.get("fees", []), purchase)
     target = D(strategy.get("profit_value", 5))
     if target < 0: raise PricingError("Целевая прибыль не может быть отрицательной")
@@ -44,7 +45,7 @@ def calculate(purchase_rub, transfer_rub, profile, strategy, competitor_price=No
         denominator -= target/100; gain = D(0)
     else: gain = purchase*target/100
     if denominator <= 0: raise PricingError("Указанная прибыль недостижима")
-    safe = (purchase + transfer + gain - b)/denominator
+    safe = (purchase + transfer + promotion + gain - b)/denominator
     desired = safe
     if competitor_price is not None:
         competitor = D(competitor_price)
@@ -60,4 +61,28 @@ def calculate(purchase_rub, transfer_rub, profile, strategy, competitor_price=No
     ceiling = strategy.get("max_price")
     if ceiling is not None and final > D(ceiling): raise PricingError("Безопасная цена превышает установленный максимум")
     net = a*final+b
-    return {"purchase_rub": str(purchase), "transfer_rub": str(transfer), "safe_price": str((safe/step).to_integral_value(rounding=ROUND_CEILING)*step), "sale_price": int(final), "net_rub": str(net), "fees_rub": str(final-net), "profit_rub": str(net-purchase-transfer), "profit_percent": str((net-purchase-transfer)/purchase*100)}
+    profit=net-purchase-transfer-promotion
+    return {"purchase_rub": str(purchase), "transfer_rub": str(transfer), "promotion_rub":str(promotion), "safe_price": str((safe/step).to_integral_value(rounding=ROUND_CEILING)*step), "sale_price": int(final), "net_rub": str(net), "fees_rub": str(final-net), "profit_rub": str(profit), "profit_percent": str(profit/purchase*100)}
+
+def calculate_with_premium(purchase,transfer,profile,strategy,premium_cost,competitor_price=None):
+    """Resolve price-dependent promotion cost using exact quotes for every candidate.
+
+    Ascending candidates also handle stepped tariffs. Never return a price quoted
+    for a different tariff price or silently use the old listing price's tariff.
+    """
+    candidate=calculate(purchase,transfer,profile,strategy,competitor_price)["sale_price"]
+    for _ in range(16):
+        if candidate>10000000:raise PricingError("Цена с учётом премиума превышает допустимый предел")
+        cost=D(premium_cost(candidate))
+        result=calculate(purchase,transfer,profile,strategy,competitor_price,promotion_rub=cost)
+        if result["sale_price"]<=candidate:
+            # If a tariff decreased, retain the already validated candidate.
+            result=calculate(purchase,transfer,profile,{**strategy,"min_price":max(D(strategy.get("min_price",0)),D(candidate))},competitor_price,promotion_rub=cost)
+            return result
+        candidate=result["sale_price"]
+    raise PricingError("Не удалось согласовать цену с тарифом премиума. Автоматическое изменение заблокировано.")
+
+def required_profit(purchase,sale,strategy):
+    target=D(strategy.get("profit_value",5))
+    if strategy.get("profit_type","percent")=="rub":return target
+    return D(sale if strategy.get("profit_basis","purchase")=="sale" else purchase)*target/100

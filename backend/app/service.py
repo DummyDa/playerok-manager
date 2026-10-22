@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 import requests
 from .db import Database, uid
-from .pricing import D, calculate, net_coefficients, PricingError
+from .pricing import D, calculate, calculate_with_premium, required_profit, net_coefficients, PricingError, PremiumQuoteRequired
 from .integrations.clients import Playerok, Mrkt, Bot, normalized, gate, IntegrationError, ManualRequired
 from .safety import is_nft_lot
 from .operations import new_operation
@@ -68,6 +68,7 @@ class Service:
             if item["id"] not in ids: self.db.put("lot",item["id"],{"missing":True})
         self.db.put("connection","playerok",{"status":"CONNECTED","last_success":time.time(),"last_error":None})
         self.db.log("lots_synced","Лоты синхронизированы",str(len(records)))
+        self.db.enqueue("reprice_preview")
 
     def refresh_lot(self, id):
         lot=self.db.get("lot",id)
@@ -148,7 +149,24 @@ class Service:
             try: self.competitor(record["id"])
             except Exception as exc: self.db.put("competitor",record["id"],{"last_error":self.db.redact(exc)})
 
-    def estimate(self, lot_id, sale=None, quote=None):
+    def premium_quote(self, lot_id, price, allow_network=True):
+        price=D(price)
+        if price<1 or price!=price.to_integral_value():raise PricingError("Для тарифа премиума нужна целая цена продажи")
+        key=str(int(price));record=self.db.get("premium_quotes",lot_id) or {};prices=record.get("prices",{})
+        saved=prices.get(key)
+        if saved and time.time()-saved.get("checked_at",0)<900:return saved
+        if not allow_network:raise PremiumQuoteRequired("Нужна проверка актуального тарифа премиума")
+        try:
+            tariff=Playerok(self.db).premium(lot_id,int(price))
+            if not tariff.get("id") or tariff.get("price") is None or D(tariff["price"])<0:raise ValueError("Missing premium tariff")
+            saved={"cost_rub":str(D(tariff["price"])),"price":int(price),"tariff_id":str(tariff["id"]),"checked_at":time.time()}
+        except Exception:raise PricingError("Не удалось получить тариф премиума Playerok. Расчёт прибыли без него запрещён.")
+        prices={k:v for k,v in prices.items() if time.time()-v.get("checked_at",0)<900}
+        prices[key]=saved;prices=dict(sorted(prices.items(),key=lambda row:row[1]["checked_at"],reverse=True)[:32])
+        self.db.put("premium_quotes",lot_id,{"prices":prices},merge=False)
+        return saved
+
+    def estimate(self, lot_id, sale=None, quote=None, allow_network=True, refresh_premium=False):
         lot=self.db.get("lot",lot_id)
         if not is_nft_lot(lot): raise PricingError("Расчёт MRKT доступен только для Telegram NFT с привязкой коллекции и модели")
         settings=self.db.settings()
@@ -171,19 +189,34 @@ class Service:
         purchase=D(quote["ton"])*D(fx["rate"])
         transfer=D(settings["transfer_stars_reserve"])*D(settings["stars_rub"])
         result=calculate(purchase,transfer,profile,strategy,competitor)
-        if sale is not None:
+        mode=strategy.get("premium_mode","auto")
+        schedule=self.db.get("promotion_schedule",lot_id) or {}
+        include=mode=="include" or (mode=="auto" and (lot.get("premium",False) or schedule.get("enabled",False)))
+        count=int(strategy.get("premium_purchases_per_sale",1)) if include else 0
+        if include:
+            if refresh_premium and allow_network:self.db.put("premium_quotes",lot_id,{"prices":{}},merge=False)
+            result=calculate_with_premium(purchase,transfer,profile,strategy,lambda price:D(self.premium_quote(lot_id,price,allow_network)["cost_rub"])*count,competitor)
+            tariff=self.premium_quote(lot_id,result["sale_price"],allow_network)
+            result.update(premium_unit_rub=tariff["cost_rub"],premium_quote_at=tariff["checked_at"],premium_quote_price=tariff["price"])
+        result.update(premium_included=include,premium_count=count)
+        paid=sale if sale is not None else lot.get("price")
+        if paid is not None:
             a,b=net_coefficients(profile.get("fees",[]),purchase)
-            net=a*D(sale)+b
-            result.update({"paid_sale_rub":str(sale),"actual_net_rub":str(net),"actual_profit_rub":str(net-purchase-transfer),"profitable":D(sale)>=D(result["safe_price"])})
+            net=a*D(paid)+b
+            paid_premium=D(self.premium_quote(lot_id,paid,allow_network)["cost_rub"])*count if include else D(0)
+            profit=net-purchase-transfer-paid_premium
+            result.update(current_price_rub=str(paid),current_profit_rub=str(profit),current_promotion_rub=str(paid_premium))
+            if sale is not None:
+                result.update({"paid_sale_rub":str(sale),"actual_net_rub":str(net),"actual_profit_rub":str(profit),"paid_promotion_rub":str(paid_premium),"profitable":profit>=required_profit(purchase,sale,strategy)})
         return {**result,"lot_id":lot_id,"pair_id":lot["pair_id"],"ton_rub":fx["rate"],"quote_ton":quote["ton"],
                 "fee_profile":profile,"strategy":strategy,"quote_at":quote["fetched_at"],"fx_at":fx["source_at"],"estimated_at":time.time()}
 
-    def preview_price(self, lot_id):
-        result=self.estimate(lot_id)
+    def preview_price(self, lot_id, allow_network=True):
+        result=self.estimate(lot_id) if allow_network else self.estimate(lot_id,allow_network=False)
         self.db.put("estimate",lot_id,{**result,"status":"READY"},merge=False)
         return new_operation(self.db,"price",{"lot_id":lot_id,"price":result["sale_price"]},expected=result)
 
-    def reprice(self):
+    def reprice(self, apply=True):
         settings=self.db.settings()
         for lot in self.db.list("lot"):
             if not is_nft_lot(lot) or lot.get("status")!="APPROVED" or lot.get("missing"): continue
@@ -191,7 +224,7 @@ class Service:
                 estimate=self.estimate(lot["id"])
                 self.db.put("estimate",lot["id"],{**estimate,"status":"READY"},merge=False)
                 strategy=estimate["strategy"]
-                if not settings["repricing_enabled"] or not strategy.get("enabled",False): continue
+                if not apply or not settings["repricing_enabled"] or not strategy.get("enabled",False): continue
                 if abs(D(estimate["sale_price"])-D(lot.get("price") or 0))<D(strategy.get("change_threshold",1)): continue
                 op=new_operation(self.db,"price",{"lot_id":lot["id"],"price":estimate["sale_price"],"automatic":True},expected=estimate)
                 from .operations import submit
@@ -230,8 +263,8 @@ class Service:
             if action in {"price","promotion","update","create"}: client=Playerok(self.db)
             if action=="price":
                 if payload.get("automatic"): gate(self.db,"repricing")
-                current=self.estimate(payload["lot_id"])
-                if current["sale_price"]!=payload["price"] or current["quote_at"]!=expected.get("quote_at") or current["fx_at"]!=expected.get("fx_at"):
+                current=self.estimate(payload["lot_id"],refresh_premium=True)
+                if current["sale_price"]!=payload["price"] or current["quote_at"]!=expected.get("quote_at") or current["fx_at"]!=expected.get("fx_at") or D(current.get("promotion_rub",0))!=D(expected.get("promotion_rub",0)):
                     raise ValueError("Расчёт изменился; получите новый предварительный расчёт")
             elif action=="promotion":
                 gate(self.db,"promotions")
@@ -276,6 +309,7 @@ class Service:
             elif action.startswith("order."): result=self.execute_order_operation(op)
             else: raise ValueError("Неизвестная операция")
             self.db.put("operation",op_id,{"state":"COMPLETE","completed_at":time.time(),"result":result})
+            if action in {"price","promotion","update"}:self.db.enqueue("reprice_preview")
             self.notice("operation:"+action,"Операция выполнена",action,operation_id=op_id,lot_id=payload.get("lot_id"))
             if op.get("order_id"): self.db.enqueue("process_order",{"order_id":op["order_id"]},key="order:"+op["order_id"])
         except Exception as exc:
@@ -393,7 +427,7 @@ class Service:
             quote=self.quote(lot["pair_id"],force=True)
             if not quote or str(quote["gift"]["id"])!=str(op["payload"]["gift"]["id"]) or D(quote["gift"]["salePrice"])!=D(op["payload"]["gift"]["salePrice"]):
                 raise ManualRequired("Минимальное предложение изменилось; нужна повторная проверка заказа")
-            snapshot=self.estimate(order["lot_id"],sale=order["sale_rub"],quote=quote)
+            snapshot=self.estimate(order["lot_id"],sale=order["sale_rub"],quote=quote,refresh_premium=True)
             if not snapshot["profitable"]: raise ManualRequired("Прибыль изменилась")
             cost=D(snapshot["purchase_rub"])
             if cost>D(s["purchase_limit_rub"]) or self.daily_spent("purchase")+cost>D(s["daily_purchase_limit_rub"]): raise ManualRequired("Лимит закупки превышен")

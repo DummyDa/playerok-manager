@@ -47,6 +47,8 @@ class FeeProfile(Strict):
 
 class Strategy(Strict):
     enabled:bool=False
+    premium_mode:Literal["auto","include","exclude"]="auto"
+    premium_purchases_per_sale:int=Field(default=1,ge=1,le=100)
     profit_type:Literal["percent","rub"]="percent"
     profit_value:Decimal=Field(default=Decimal(5),ge=0)
     profit_basis:Literal["purchase","sale"]="purchase"
