@@ -1,12 +1,23 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { ArrowUpCircle, ExternalLink, RefreshCw } from "lucide-react";
 import { api, waitTask } from "../lib/api";
 import { Button, Dialog, Notice, Panel, Spinner, date } from "./ui";
 
 const active = ["QUEUED", "FETCHING", "STOPPING", "BACKUP", "INSTALLING", "RESTARTING", "ROLLING_BACK"];
-const useUpdates = () => useSWR<any>("/updates", api, { refreshInterval: 5000, shouldRetryOnError: false });
+// A server restart is expected during installation. Keep reconnecting even after
+// a failed poll and when the tab is in the background.
+const useUpdates = () => useSWR<any>("/updates", api, {
+  refreshInterval: 5000, refreshWhenHidden: true, refreshWhenOffline: true,
+  onErrorRetry: (_error, _key, _config, revalidate, { retryCount }) => {
+    setTimeout(() => revalidate({ retryCount }), 3000);
+  },
+});
+const pendingKey = "playerok.update-pending";
+function rememberUpdate(target: string) {
+  try { sessionStorage.setItem(pendingKey, JSON.stringify({ target, started: Date.now() })); } catch {}
+}
 
 export function UpdateBanner() {
   const update = useUpdates();
@@ -14,19 +25,63 @@ export function UpdateBanner() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [openedVersion, setOpenedVersion] = useState("");
+  const pendingTarget = useRef("");
+  const reloading = useRef(false);
   const data = update.data;
   const completion = data?.progress?.state === "COMPLETE" ? `${data.progress.installed_commit || data.progress.target}:${data.progress.updated_at}` : "";
   useEffect(() => {
     if (!completion) return;
     try { setOpenedVersion(localStorage.getItem("playerok.update-opened") || sessionStorage.getItem("playerok.update-opened") || ""); } catch {}
   }, [completion]);
+  useEffect(() => {
+    if (!data || reloading.current) return;
+    const progress = data.progress;
+    if (active.includes(progress?.state) && progress.target) {
+      pendingTarget.current = progress.target;
+      rememberUpdate(progress.target);
+      return;
+    }
+    if (!pendingTarget.current) {
+      try {
+        const saved = JSON.parse(sessionStorage.getItem(pendingKey) || "null");
+        if (saved && Date.now() - saved.started < 3600000) pendingTarget.current = saved.target;
+      } catch {}
+    }
+    if (progress?.state === "FAILED") {
+      pendingTarget.current = "";
+      try { sessionStorage.removeItem(pendingKey); } catch {}
+      return;
+    }
+    // COMPLETE is written only after the launcher has started the new frontend.
+    // Also verify the API is serving the intended source version before reload.
+    if (!completion || !pendingTarget.current || data.current_commit !== pendingTarget.current ||
+        (progress.installed_commit || progress.target) !== pendingTarget.current) return;
+    reloading.current = true;
+    try {
+      try { localStorage.setItem("playerok.update-opened", completion); }
+      catch { try { sessionStorage.setItem("playerok.update-opened", completion); } catch {} }
+      try { sessionStorage.removeItem(pendingKey); } catch {}
+      setOpenedVersion(completion);
+      location.reload();
+    } catch {
+      reloading.current = false;
+      setError("Новая версия запущена. Нажмите «Открыть новую версию», чтобы обновить страницу.");
+    }
+  }, [data, completion]);
   if (!data) return null;
   const running = active.includes(data.progress?.state);
   const recentResult = ["COMPLETE", "FAILED"].includes(data.progress?.state) && (!completion || openedVersion !== completion) && Date.now() / 1000 - data.progress.updated_at < 1800;
   if ((!data.available || data.dismissed) && !running && !recentResult) return null;
   async function install() {
     setBusy(true); setError("");
-    try { await api("/updates/install", "POST", { commit: data.latest_commit }); setOpen(false); await update.mutate(); }
+    try {
+      await api("/updates/install", "POST", { commit: data.latest_commit });
+      pendingTarget.current = data.latest_commit; rememberUpdate(data.latest_commit);
+      setOpen(false);
+      // A missing response here means services may already be stopping, not a
+      // failed installation. The reconnecting poll will recover automatically.
+      await update.mutate().catch(() => undefined);
+    }
     catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -41,7 +96,7 @@ export function UpdateBanner() {
   return <>
     <section className="update-banner" aria-label="Обновление приложения" role="status">
       <span className="update-icon">{running ? <Spinner /> : <ArrowUpCircle size={23} />}</span>
-      <div className="update-copy"><strong>{running ? "Устанавливаем обновление" : recentResult ? data.progress.state === "COMPLETE" ? "Приложение обновлено" : "Обновление не установлено" : "Доступно обновление Playerok Manager"}</strong><span>{running || recentResult ? data.progress.message : (data.message || "В GitHub появилась новая версия").split("\n")[0]}</span></div>
+      <div className="update-copy"><strong>{running ? "Устанавливаем обновление" : recentResult ? data.progress.state === "COMPLETE" ? "Приложение обновлено" : "Обновление не установлено" : "Доступно обновление Playerok Manager"}</strong><span>{running && update.error ? "Приложение временно недоступно: ожидаем завершения установки и запуска служб." : running || recentResult ? data.progress.message : (data.message || "В GitHub появилась новая версия").split("\n")[0]}</span>{running && <small>Новая версия откроется автоматически. Перезапускать приложение вручную не нужно.</small>}</div>
       {!running && !recentResult && <div className="button-group"><Button secondary onClick={async () => { await api("/updates/dismiss", "POST", { commit: data.latest_commit }); await update.mutate(); }}>Позже</Button><Button onClick={() => { setError(""); setOpen(true); }}>Посмотреть обновление</Button></div>}
       {recentResult && data.progress.state === "COMPLETE" && <Button onClick={openNewVersion}>Открыть новую версию</Button>}
       {error && !open && <Notice error>{error}</Notice>}

@@ -95,6 +95,36 @@ test("opening the installed version reloads the page and dismisses only that com
   await expect(button).toBeVisible();
 });
 
+test("installation reconnects after repeated server outages and opens the ready version automatically", async ({ page }) => {
+  await page.clock.install();
+  await mock(page);
+  const target = "b".repeat(40);
+  let stage = "IDLE", offline = false, failures = 0, loads = 0, installs = 0;
+  page.on("load", () => loads++);
+  await page.route("**/api/v1/updates**", async route => {
+    if (route.request().method() === "POST") { installs++; stage = "STOPPING"; return route.fulfill({ json: { started: true } }); }
+    if (offline) { failures++; return route.fulfill({ status: 503, contentType: "text/plain", body: "Services restarting" }); }
+    return route.fulfill({ json: { available: stage !== "COMPLETE", install_supported: true, current_commit: stage === "COMPLETE" ? target : "a".repeat(40), latest_commit: target, progress: { state: stage, target, installed_commit: stage === "COMPLETE" ? target : undefined, updated_at: Date.now() / 1000, message: "Завершаем работу служб" } } });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Посмотреть обновление", exact: true }).click();
+  await page.getByRole("button", { name: "Установить обновление", exact: true }).click();
+  await expect(page.getByText("Новая версия откроется автоматически. Перезапускать приложение вручную не нужно.")).toBeVisible();
+  offline = true;
+  for (let i = 0; i < 4; i++) { await page.clock.fastForward(6000); await page.clock.runFor(100); }
+  await expect.poll(() => failures).toBeGreaterThanOrEqual(3);
+  await expect(page.getByText("Приложение временно недоступно: ожидаем завершения установки и запуска служб.")).toBeVisible();
+  expect(loads).toBe(1);
+  stage = "COMPLETE"; offline = false;
+  const loaded = page.waitForEvent("load");
+  await page.clock.fastForward(6000);
+  await loaded;
+  await expect(page.getByRole("button", { name: "Открыть новую версию", exact: true })).toHaveCount(0);
+  await expect.poll(() => loads).toBe(2);
+  expect(installs).toBe(1);
+  expect(await page.evaluate(() => sessionStorage.getItem("playerok.update-pending"))).toBeNull();
+});
+
 test("failed background polls keep cached content and show only a quiet status after a sustained failure", async ({ page }) => {
   await page.clock.install();
   await mock(page);
