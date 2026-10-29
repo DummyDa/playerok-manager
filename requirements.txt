@@ -6,6 +6,7 @@ requests[socks]>=2.32,<3
 cryptography>=44
 python-multipart>=0.0.20
 telethon>=1.36,<2
+kurigram==2.2.26
 python-socks>=2.4
 tqdm>=4.66,<5
 curl-cffi>=0.13,<1

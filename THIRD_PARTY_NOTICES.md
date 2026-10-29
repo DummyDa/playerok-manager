@@ -3,6 +3,7 @@
 Лицензия на сам проект пока не выбрана. Это не меняет условия сторонних компонентов.
 
 - [Telethon](https://github.com/LonamiWebs/Telethon) — MIT; пользовательская Telegram-сессия и MTProto.
+- [Kurigram](https://github.com/kurigram-org/kurigram) — LGPL-3.0; дополнительный способ передачи коллекционных подарков. Устанавливается отдельной зависимостью.
 - [PlayerokAPI](https://github.com/alleexxeeyy/PlayerokAPI) — MIT; устанавливается отдельно, зафиксирован commit `52e4c740eb084d75dd063ff025acc3e3a0569a52`.
 - [FastAPI](https://github.com/fastapi/fastapi) — MIT.
 - [SQLAlchemy](https://github.com/sqlalchemy/sqlalchemy) — MIT.

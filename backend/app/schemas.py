@@ -12,6 +12,7 @@ class PasswordChange(Strict):
     new_password:str=Field(min_length=10,max_length=128)
 class Cookies(Strict): cookies:str=Field(min_length=10,max_length=20000)
 class Settings(Strict):
+    delivery_transport:Literal["mtproto","kurigram","chrome_extension"]|None=None
     emergency_stop:bool|None=None
     repricing_enabled:bool|None=None
     purchases_enabled:bool|None=None
@@ -28,6 +29,17 @@ class Settings(Strict):
     competitor_interval:int|None=Field(default=None,ge=60,le=86400)
     quote_max_age:int|None=Field(default=None,ge=60,le=86400)
     description_template:str|None=Field(default=None,max_length=20000)
+    buyer_paid_enabled:bool|None=None
+    buyer_delivered_enabled:bool|None=None
+    buyer_paid_template:str|None=Field(default=None,max_length=4000)
+    buyer_delivered_template:str|None=Field(default=None,max_length=4000)
+
+    @model_validator(mode="after")
+    def valid_buyer_templates(self):
+        from .buyer_messages import validate_template
+        for template in (self.buyer_paid_template,self.buyer_delivered_template):
+            if template is not None:validate_template(template)
+        return self
 
 class Fee(Strict):
     name:str=Field(min_length=1,max_length=100)

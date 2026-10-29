@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import re
 import time
 from dataclasses import asdict
 from decimal import Decimal
@@ -9,7 +10,9 @@ from curl_cffi import requests as curl_requests
 from telethon import TelegramClient, functions, types, connection
 from telethon.sessions import StringSession
 from .legacy_playerok import PlayerokListingClient, PlayerokListingInput, PLAYEROK_ACTIVE_PROFILE_ITEM_STATUSES, PLAYEROK_COMPLETED_PROFILE_ITEM_STATUSES
+from .mrkt_availability import gift_block_reason
 from ..db import Database
+from ..order_dates import order_created_at
 from ..pricing import D
 from ..safety import IntegrationError,ManualRequired,WriteBlocked,gate
 
@@ -41,6 +44,34 @@ def normalized(item):
             "category": (item.get("attributes") or {}).get("type"), "synced_at": time.time(),
             "url": "https://playerok.com/products/"+str(item.get("slug", ""))}
 
+
+def order_recipient(deal):
+    candidates = {}
+    fields = list(getattr(deal, "obtaining_fields", None) or [])
+    fields += list(getattr(deal, "automation_obtaining_fields", None) or [])
+    for field in fields:
+        label = " ".join(str(getattr(field, key, "") or "") for key in ("label", "name", "code"))
+        value = str(getattr(field, "value", "") or "").strip()
+        match = re.fullmatch(r"@?([A-Za-z][A-Za-z0-9_]{3,31})", value)
+        if match and (value.startswith("@") or "username" in label.lower()):
+            candidate = match.group(1)
+            candidates.setdefault(candidate.casefold(), candidate)
+    # Conflicting usernames must never silently select the last field.
+    return next(iter(candidates.values())) if len(candidates) == 1 else None
+
+
+def order_lot_id(db, item):
+    item_id = str(getattr(item, "id", "") or "")
+    # An explicit local binding (including manual mode) always wins.
+    if db.get("lot", item_id):
+        return item_id
+    slug = getattr(item, "slug", None)
+    if slug:
+        matches = [lot for lot in db.list("lot", 100000) if lot.get("slug") == slug]
+        if len(matches) == 1:
+            return matches[0]["id"]
+    return item_id
+
 class Playerok:
     def __init__(self, db):
         self.db, self.config = db, db.config
@@ -50,6 +81,12 @@ class Playerok:
         self.client = PlayerokListingClient(self.config, cookies, session=GuardSession(db))
 
     def viewer(self): return self.client.get_viewer_local_balance()
+    def send_chat_message(self, chat_id, text):
+        gate(self.db)
+        query="mutation createChatMessage($input: CreateChatMessageInput!) { createChatMessage(input: $input) { id } }"
+        payload={"operationName":"createChatMessage","variables":{"input":{"chatId":chat_id,"imagesIds":[],"text":text}},"query":query}
+        # Use our single-attempt transport, not the SDK's automatic POST retries.
+        return self.client._graphql_post_json(payload,"createChatMessage","/deal/[id]").get("createChatMessage")
     def item(self, slug): return self.client.get_item(slug)
     def lots(self):
         account = self.db.settings().get("playerok_account_id")
@@ -100,27 +137,43 @@ class Playerok:
         if self.config.playerok_proxy: kwargs["proxy"] = self.config.playerok_proxy
         return Account(**kwargs).get()
 
-    def orders(self):
+    def orders(self, deal_id=None):
         account = self.account()
-        try: deals = account.get_deals(count=100).deals
-        except Exception:
-            deals = []
-            for chat in account.get_chats(count=100).chats:
-                deals += list(getattr(chat, "deals", []) or [])
+        if deal_id:
+            deals = [account.get_deal(deal_id)]
+            if not deals[0] or str(deals[0].id) != str(deal_id):
+                raise IntegrationError("Playerok вернул другую сделку вместо запрошенной")
+        else:
+            try: deals = account.get_deals(count=100).deals
+            except Exception:
+                deals = []
+                for chat in account.get_chats(count=100).chats:
+                    deals += list(getattr(chat, "deals", []) or [])
         def enum(x): return getattr(x,"name",str(x))
         result = []
         for d in deals:
             if enum(getattr(d,"direction",None)) != "OUT": continue
+            recipient = order_recipient(d)
+            # List/chat summaries omit obtainingFields. Hydrate actionable paid
+            # deals before WAITING_DATA or purchase preflight; historical deals
+            # do not need an extra request on every polling cycle.
+            summary_item = getattr(d, "item", None)
+            if (not deal_id and enum(getattr(d,"status",None)) == "PAID"
+                    and (recipient is None or not getattr(summary_item,"slug",None)
+                         or getattr(summary_item,"price",None) is None)):
+                detail = account.get_deal(str(d.id))
+                if not detail or str(detail.id) != str(d.id) or enum(getattr(detail,"direction",None)) != "OUT":
+                    raise IntegrationError("Playerok не подтвердил полные данные исходящей сделки")
+                d = detail
+                recipient = order_recipient(d)
             item = getattr(d, "item", None)
-            fields = getattr(d,"obtaining_fields",[]) or []
-            recipient = None
-            import re
-            for f in fields:
-                label, value = str(getattr(f,"label","")), str(getattr(f,"value",""))
-                match = re.fullmatch(r"@?([A-Za-z0-9_]{5,32})", value.strip())
-                if match and ("@" in value or "username" in label.lower()): recipient = match.group(1)
-            result.append({"id":str(d.id),"status":enum(getattr(d,"status",None)),"lot_id":str(getattr(item,"id","") or ""),
-                           "title":str(getattr(item,"name","") or ""),"sale_rub":str(getattr(d,"price",0) or 0),"recipient":recipient})
+            price = getattr(item, "price", None)
+            if price is None: price = getattr(d,"price",0)
+            result.append({"id":str(d.id),"status":enum(getattr(d,"status",None)),"lot_id":order_lot_id(self.db,item),
+                           "created_at":order_created_at({"id":str(d.id),"created_at":getattr(d,"created_at",None)}),
+                           "source_item_id":str(getattr(item,"id","") or ""),"lot_slug":getattr(item,"slug",None),
+                           "chat_id":str(getattr(getattr(d,"chat",None),"id","") or ""),
+                           "title":str(getattr(item,"name","") or ""),"sale_rub":str(price or 0),"recipient":recipient})
         return result
 
 def telegram_options(config):
@@ -190,16 +243,28 @@ class Mrkt:
         return response.json()
 
     def search(self, collection, model):
-        result = self.request("POST","/gifts/saling",{"collectionNames":[collection],"modelNames":[model],"backdropNames":[],"symbolNames":[],
-            "ordering":"Price","lowToHigh":True,"maxPrice":None,"minPrice":None,"mintable":None,"number":None,"count":100,"cursor":"","query":None,"promotedFirst":False})
-        gifts = result.get("gifts",[]) if isinstance(result,dict) else []
         def name(g, key):
             v = g.get(key+"Name") or g.get(key)
             return str(v.get("name","") if isinstance(v,dict) else v or "").strip().casefold()
-        matches = [g for g in gifts if name(g,"collection")==collection.strip().casefold() and name(g,"model")==model.strip().casefold()
-                   and g.get("salePrice") is not None and D(g["salePrice"])>0 and not g.get("isSold",False)]
-        matches.sort(key=lambda g:D(g["salePrice"]))
-        return matches
+        cursor, seen = "", set()
+        for _ in range(10):
+            result = self.request("POST","/gifts/saling",{"collectionNames":[collection],"modelNames":[model],"backdropNames":[],"symbolNames":[],
+                "ordering":"Price","lowToHigh":True,"maxPrice":None,"minPrice":None,"mintable":None,"number":None,"count":100,"cursor":cursor,"query":None,"promotedFirst":False,
+                "isTransferable":True,"isPremarket":False,"giftType":"Upgraded"})
+            gifts = result.get("gifts",[]) if isinstance(result,dict) else []
+            matches = [g for g in gifts if name(g,"collection")==collection.strip().casefold() and name(g,"model")==model.strip().casefold()
+                       and g.get("salePrice") is not None and D(g["salePrice"])>0 and not g.get("isSold",False)
+                       and gift_block_reason(g) is None]
+            if matches:
+                matches.sort(key=lambda g:D(g["salePrice"]))
+                return matches
+            cursor = result.get("cursor") if isinstance(result,dict) else None
+            if not cursor:
+                return []
+            if cursor in seen:
+                raise IntegrationError("MRKT вернул повторный курсор поиска подарков")
+            seen.add(cursor)
+        raise IntegrationError("Не найден доступный для передачи подарок за 10 страниц MRKT")
 
     @staticmethod
     def ton(amount): return str(D(amount)/Decimal("1000000000"))
@@ -212,11 +277,25 @@ class Mrkt:
         return {"mrkt_ton":self.ton(result["hard"]),"stars":self.telegram(stars)}
 
     def buy(self, gift):
-        result = self.request("POST","/gifts/buy",{"ids":[gift["id"]],"prices":{gift["id"]:gift["salePrice"]}},write=True)
-        gifts = result if isinstance(result,list) else result.get("gifts",result.get("purchasedGifts",[]))
-        found = next((g for g in gifts if str(g.get("id"))==str(gift["id"])),None)
+        gate(self.db,"purchases")
+        reason = gift_block_reason(gift)
+        if reason:
+            raise ManualRequired("Закупка остановлена: " + reason)
+        self.request("POST","/gifts/buy",{"ids":[gift["id"]],"prices":{gift["id"]:gift["salePrice"]}},write=True)
+        # The buy response is not consistently a list of gift objects. Confirm
+        # the exact purchased asset through a read-only ownership endpoint.
+        found = self.owned_gift(gift)
         if not found: raise ManualRequired("MRKT не подтвердил ID купленного подарка; требуется сверка")
         return found
+
+    def owned_gift(self, expected):
+        result = self.request("GET","/gifts/gift/"+str(expected["id"]))
+        if not isinstance(result,dict) or str(result.get("id"))!=str(expected["id"]):return None
+        slug = expected.get("slug") or expected.get("giftSlug") or expected.get("name")
+        actual = result.get("slug") or result.get("giftSlug") or result.get("name")
+        if not slug or actual!=slug:return None
+        if result.get("isMine") is not True or result.get("isOnPlatform") is not True:return None
+        return result
 
     def withdraw(self, gift_id): return self.request("POST","/gifts/return",{"ids":[gift_id]},write=True)
 
@@ -246,6 +325,9 @@ class Mrkt:
         return self.telegram(read)
 
     def transfer(self, saved, recipient, expected_recipient_id):
+        if self.db.settings().get("delivery_transport") == "kurigram":
+            from .kurigram_delivery import KurigramDelivery
+            return KurigramDelivery(self.db, self).transfer(saved, recipient, expected_recipient_id)
         gate(self.db,"transfers")
         async def send(c):
             peer = await c.get_input_entity(await c.get_entity(recipient))
@@ -269,6 +351,30 @@ class Mrkt:
         async def read(c):
             result = await c(functions.payments.GetUniqueStarGiftRequest(slug=slug))
             return getattr(getattr(result.gift,"owner_id",None),"user_id",None)
+        return self.telegram(read)
+
+    def transfer_receipt(self, slug, recipient, expected_recipient_id, submitted_at, source_msg_id=0):
+        """Find Telegram's outgoing gift service message when ownership is hidden."""
+        async def read(c):
+            user = await c.get_entity(recipient)
+            if not isinstance(user, types.User) or user.id != expected_recipient_id:
+                raise ManualRequired("Изменился ID Telegram получателя")
+            async for message in c.iter_messages(user, limit=100, min_id=source_msg_id):
+                date = getattr(message, "date", None)
+                if not date:
+                    continue
+                # Telegram dates have second precision, unlike our local timestamp.
+                if date.timestamp() < int(submitted_at):
+                    break
+                action = getattr(message, "action", None)
+                if (isinstance(message, types.MessageService) and message.out
+                        and getattr(message.peer_id, "user_id", None) == expected_recipient_id
+                        and isinstance(action, types.MessageActionStarGiftUnique)
+                        and not getattr(action, "refunded", False)
+                        and getattr(action.gift, "slug", None) == slug):
+                    return {"message_id": message.id, "recipient_id": expected_recipient_id,
+                            "slug": slug, "date": date.timestamp()}
+            return None
         return self.telegram(read)
 
 class Bot:

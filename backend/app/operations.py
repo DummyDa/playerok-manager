@@ -42,3 +42,22 @@ def recover(db):
             db.put("operation",op["id"],{"state":"UNKNOWN","error":"Процесс прерван после отправки. Нужна сверка результата."})
             if op.get("order_id"): db.put("order",op["order_id"],{"stage":"MANUAL","reason":"Неизвестен результат денежной операции"})
         elif op.get("state")=="QUEUED": db.enqueue("execute",{"operation_id":op["id"]},key="execute:"+op["id"])
+    for message in db.list("buyer_message",100000):
+        if message.get("state")=="SUBMITTED":
+            db.put("buyer_message",message["id"],{"state":"UNKNOWN","error":"Отправка прервана перезапуском; автоматического повтора нет"})
+        elif message.get("state")=="QUEUED":
+            db.enqueue("buyer_message",{"message_id":message["id"]},key="buyer_message:"+message["id"])
+def order_retry_reason(order, operations, has_spend=False):
+    if not order or order.get("source")=="legacy" or order.get("cancel_requested"):
+        return "Импортированный или отменённый заказ нельзя повторить"
+    if order.get("stage") not in {"MANUAL","DISCOVERED","AWAITING_ENABLE","WAITING_DATA","CHECK_PRICE","PURCHASED","WITHDRAWN","TRANSFERRED"}:
+        return "Заказ завершён, отменён или уже исполняется"
+    if any(op.get("state") in {"QUEUED","SUBMITTED","UNKNOWN","BROWSER_WAIT"} for op in operations):
+        return "Предыдущая операция выполняется или требует сверки"
+    if any(op.get("state")=="FAILED" and op.get("submitted_at") for op in operations):
+        return "Денежный запрос уже отправлялся; сначала нужна сверка"
+    if order.get("stage")=="MANUAL" or order.get("manual_hold"):
+        if (order.get("mrkt_gift_id") or order.get("withdraw_at") or has_spend
+                or any(op.get("state")=="COMPLETE" for op in operations)):
+            return "Заказ уже прошёл денежный этап; сначала нужна сверка"
+    return None

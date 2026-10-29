@@ -1,11 +1,63 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 import asyncio,time
+from datetime import datetime, timezone
 import pytest
 from telethon import types
 from backend.app.integrations.clients import Mrkt,ManualRequired
 from backend.app.service import Service
 from backend.app.operations import recover
+
+
+@pytest.mark.parametrize("change", [None,"slug","recipient","incoming","old","refunded","ordinary"])
+def test_transfer_receipt_requires_exact_recent_outgoing_gift(db, monkeypatch, change):
+    now = 2000.8
+    action = types.MessageActionStarGiftUnique(gift=SimpleNamespace(slug="Gift-5"))
+    message = types.MessageService(id=100, peer_id=types.PeerUser(123), out=True,
+                                  date=datetime.fromtimestamp(2000, timezone.utc), action=action)
+    if change == "slug": action.gift.slug = "Other-5"
+    elif change == "recipient": message.peer_id = types.PeerUser(999)
+    elif change == "incoming": message.out = False
+    elif change == "old": message.date = datetime.fromtimestamp(1999, timezone.utc)
+    elif change == "refunded": action.refunded = True
+    elif change == "ordinary": message = types.Message(id=100,peer_id=types.PeerUser(123),out=True,
+                                                       date=message.date,message="Gift-5")
+    async def messages(*args, **kwargs):
+        assert kwargs == {"limit":100,"min_id":50}
+        yield message
+    client = SimpleNamespace(get_entity=AsyncMock(return_value=types.User(id=123)), iter_messages=messages)
+    mrkt = Mrkt(db)
+    monkeypatch.setattr(mrkt, "telegram", lambda op: asyncio.run(op(client)))
+    result = mrkt.transfer_receipt("Gift-5", "buyer",123,now,50)
+    if change is None:
+        assert result == {"message_id":100,"recipient_id":123,"slug":"Gift-5","date":2000.0}
+    else:
+        assert result is None
+
+
+def test_transfer_receipt_rejects_changed_username_owner(db, monkeypatch):
+    mrkt = Mrkt(db)
+    client = SimpleNamespace(get_entity=AsyncMock(return_value=types.User(id=999)))
+    monkeypatch.setattr(mrkt, "telegram", lambda op: asyncio.run(op(client)))
+    with pytest.raises(ManualRequired, match="ID"):
+        mrkt.transfer_receipt("Gift-5","buyer",123,time.time(),50)
+
+
+def test_hidden_owner_order_uses_matching_service_receipt_before_marking_sent(db,monkeypatch):
+    db.configure(purchases_enabled=True,transfers_enabled=True,delivery_tested=True)
+    db.put("lot","l",{"pair_id":"p"})
+    order=db.put("order","o",{"stage":"TRANSFERRED","lot_id":"l","gift_slug":"Gift-5",
+        "recipient":"buyer","recipient_id":123,"snapshot":{}})
+    db.put("operation","o:transfer",{"state":"COMPLETE","submitted_at":2000.8,"payload":{"saved":{"msg_id":50}}})
+    svc=Service(db)
+    monkeypatch.setattr(svc.mrkt,"owner",lambda _:None)
+    receipt=Mock(return_value={"message_id":100,"slug":"Gift-5","recipient_id":123})
+    monkeypatch.setattr(svc.mrkt,"transfer_receipt",receipt)
+    svc.process_order("o")
+    assert db.get("operation","o:mark_sent")["state"]=="QUEUED"
+    receipt.assert_called_once_with("Gift-5","buyer",123,2000.8,50)
+    assert db.get("order","o")["transfer_verification"]=="telegram_service_message"
+    svc.order_preflight({"action":"order.mark_sent","order_id":"o"})
 
 def test_recipient_change_blocks_before_payment_or_transfer(db,monkeypatch):
     db.configure(transfers_enabled=True)
@@ -86,3 +138,24 @@ def test_regular_orders_remain_visible_but_are_not_queued_for_delivery(db,monkey
     assert db.get("order","new")["stage"]=="MANUAL"
     assert db.get("order","new")["sale_rub"]=="300"
     with db.sessions() as s:assert s.scalar(select(Task.id).where(Task.kind=="process_order")) is None
+
+
+def test_chrome_offline_waits_before_creating_purchase(db):
+    db.configure(purchases_enabled=True,transfers_enabled=True,delivery_tested=True,delivery_transport="chrome_extension")
+    db.put("lot","l",{"pair_id":"p"})
+    db.put("order","o",{"stage":"DISCOVERED","lot_id":"l"})
+    Service(db).process_order("o")
+    assert db.get("order","o")["stage"]=="AWAITING_ENABLE"
+    assert db.get("operation","o:buy") is None
+
+
+@pytest.mark.parametrize("state,submitted", [("FAILED",False),("FAILED",True),("UNKNOWN",False)])
+def test_only_chrome_readiness_failure_before_submission_can_requeue(db,state,submitted):
+    op={"state":state,"error":"Расширение Chrome не готово: откройте Chrome и войдите в Telegram Web A"}
+    if submitted:op["submitted_at"]=time.time()
+    db.put("operation","o:buy",op)
+    svc=Service(db)
+    if state=="FAILED" and not submitted:
+        assert svc.make_order_operation("o","buy",{"gift":{"id":"fresh"}},{} )["state"]=="QUEUED"
+    else:
+        with pytest.raises(ManualRequired):svc.make_order_operation("o","buy",{}, {})

@@ -19,7 +19,7 @@ class Worker:
         expire(self.db)
         s=self.db.settings()
         intervals={"check":300,"sync_lots":300,"fx":300,"quotes":s["quote_interval"],"competitors":s["competitor_interval"],
-                   "orders":60,"bot":5,"promotions":30,"backup":86400,"check_updates":900}
+                   "orders":60,"bot":5,"promotions":30,"backup":86400,"check_updates":900,"browser_delivery":5}
         for kind,interval in intervals.items():
             if kind in {"sync_lots","orders","competitors"} and not self.db.secret("playerok_cookies"):continue
             if kind=="quotes" and not has_user_session(self.db):continue
@@ -33,7 +33,7 @@ class Worker:
     def claim(self):
         with self.db.tx() as s:
             task=s.scalar(select(Task).where(Task.state=="READY",Task.due<=time.time()).order_by(
-                case((Task.kind=="telegram_auth",-1),(Task.kind=="execute",0),(Task.kind=="process_order",1),else_=2),Task.due).limit(1))
+                case((Task.kind=="telegram_auth",-1),(Task.kind.in_(["execute","buyer_message"]),0),(Task.kind=="process_order",1),else_=2),Task.due).limit(1))
             if not task:return None
             affected=s.execute(update(Task).where(Task.id==task.id,Task.state=="READY").values(state="RUNNING",lease=time.time()+180,attempts=Task.attempts+1)).rowcount
             if not affected:return None
@@ -54,7 +54,7 @@ class Worker:
             with self.db.tx() as s:
                 task=s.get(Task,id);task.error=error;task.lease=None
                 # Money tasks never retry blindly; all public write paths use operations.
-                retry=kind not in {"execute","process_order","telegram_auth"} and task.attempts<4
+                retry=kind not in {"execute","process_order","telegram_auth","buyer_message"} and task.attempts<4
                 task.state="READY" if retry else "FAILED"
                 task.due=time.time()+min(300,10*2**task.attempts)
                 if retry:
@@ -80,6 +80,15 @@ class Worker:
             from .updates import check
             return check(self.db)
         service=self.service
+        if kind=="buyer_message":
+            from .buyer_messages import send
+            return send(service,p["message_id"])
+        if kind=="browser_manual_preview":
+            from .browser_delivery import prepare_manual_preview
+            return prepare_manual_preview(service,p["recipient"])
+        if kind=="browser_delivery":
+            from .browser_delivery import tick
+            return tick(service)
         if kind=="reprice_preview":return service.reprice(apply=False)
         actions={"check":lambda:service.check(p.get("name","all")),"sync_lots":service.sync_lots,"fx":service.refresh_fx,
             "quotes":service.quotes,"quote":lambda:service.quote(p["pair_id"],True),"catalog":service.catalog,"models":lambda:service.models(p["collection"]),

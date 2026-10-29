@@ -19,6 +19,68 @@ def test_auth_required_and_csrf_enforced(client):
     assert client.patch("/api/v1/settings",headers={**headers,"Origin":"https://evil.example"},json={"repricing_enabled":True}).status_code==403
     assert client.patch("/api/v1/settings",headers=headers,json={"stars_rub":"2"}).status_code==200
 
+
+def test_order_retry_only_queues_regular_checks_and_deduplicates(db,client):
+    headers=authenticate(client)
+    db.put("lot","l",{"pair_id":"p","delivery_mode":"telegram_nft"})
+    db.put("order","o",{"stage":"AWAITING_ENABLE","lot_id":"l"})
+    a=client.post("/api/v1/orders/o/process",headers=headers)
+    b=client.post("/api/v1/orders/o/process",headers=headers)
+    assert a.status_code==200 and a.json()["task_id"]==b.json()["task_id"]
+    assert db.get("order","o")["stage"]=="AWAITING_ENABLE"
+    assert db.get("order","o")["allow_low_profit"] is True
+    assert db.list("operation")==[] and db.list("ledger")==[]
+
+
+@pytest.mark.parametrize("state",["UNKNOWN","SUBMITTED","BROWSER_WAIT"])
+def test_order_retry_blocks_unresolved_money_operation(db,client,state):
+    headers=authenticate(client)
+    db.put("lot","l",{"pair_id":"p"})
+    db.put("order","o",{"stage":"WITHDRAWN","lot_id":"l"})
+    db.put("operation","o:transfer",{"state":state,"order_id":"o"})
+    assert client.post("/api/v1/orders/o/process",headers=headers).status_code==400
+
+
+@pytest.mark.parametrize("fields",[{"stage":"COMPLETE"},{"stage":"CANCELLED"},
+    {"stage":"PURCHASING"},{"source":"legacy"},{"cancel_requested":True}])
+def test_order_retry_respects_holds_and_terminal_stages(db,client,fields):
+    headers=authenticate(client)
+    db.put("lot","l",{"pair_id":"p"})
+    db.put("order","o",{"stage":"AWAITING_ENABLE","lot_id":"l",**fields})
+    assert client.post("/api/v1/orders/o/process",headers=headers).status_code==400
+
+
+def test_explicit_retry_releases_manual_hold_before_purchase_and_rebuilds_failed_preview(db,client):
+    from backend.app.service import Service
+    headers=authenticate(client)
+    db.put("lot","l",{"pair_id":"p"})
+    db.put("order","o",{"stage":"MANUAL","manual_hold":True,"lot_id":"l","gift_slug":"OldSelection-1",
+                         "reason":"Закупка не обеспечивает заданную прибыль"})
+    db.put("operation","o:buy",{"state":"FAILED","order_id":"o","action":"order.buy","error":"Chrome offline"})
+    item=client.get("/api/v1/orders").json()["items"][0]
+    assert item["retry_allowed"] is True
+    assert client.post("/api/v1/orders/o/process",headers=headers).status_code==200
+    assert db.get("order","o")["stage"]=="DISCOVERED" and not db.get("order","o")["manual_hold"]
+    assert db.get("operation","o:buy")["state"]=="RETRY_PENDING"
+    op=Service(db).make_order_operation("o","buy",{"gift":{"id":"fresh-gift"}},{"purchase_rub":"123"})
+    assert op["state"]=="QUEUED" and op["payload"]["gift"]["id"]=="fresh-gift"
+    assert op["previous_preflight_error"]=="Chrome offline"
+    assert db.list("ledger")==[]
+
+
+@pytest.mark.parametrize("evidence",["completed","submitted","gift","ledger"])
+def test_manual_retry_never_resets_existing_purchase_evidence(db,client,evidence):
+    headers=authenticate(client)
+    db.put("lot","l",{"pair_id":"p"})
+    db.put("order","o",{"stage":"MANUAL","manual_hold":True,"lot_id":"l"})
+    if evidence=="completed":db.put("operation","o:buy",{"state":"COMPLETE","order_id":"o"})
+    elif evidence=="submitted":db.put("operation","o:buy",{"state":"FAILED","submitted_at":1,"order_id":"o"})
+    elif evidence=="gift":db.put("order","o",{"mrkt_gift_id":"purchased"})
+    else:db.put("ledger","expense",{"order_id":"o","type":"purchase","amount_rub":"100"})
+    assert client.get("/api/v1/orders").json()["items"][0]["retry_allowed"] is False
+    assert client.post("/api/v1/orders/o/process",headers=headers).status_code==400
+    assert db.get("order","o")["manual_hold"] is True
+
 def test_https_origin_is_exact_and_keeps_csrf(db):
     db.config.env["PUBLIC_ORIGIN"]="https://manager.example.com"
     with TestClient(create_app(db)) as c:
@@ -57,6 +119,17 @@ def test_trade_defaults_are_safe(client):
     assert "dry_run" not in s
     assert all(s[k] is False for k in ["repricing_enabled","purchases_enabled","transfers_enabled","promotions_enabled","notifications_enabled","delivery_tested"])
     assert s["daily_purchase_limit_rub"]=="0"
+
+
+def test_buyer_message_templates_validate_and_start_disabled(client):
+    headers=authenticate(client)
+    settings=client.get("/api/v1/settings").json()
+    assert not settings["buyer_paid_enabled"] and not settings["buyer_delivered_enabled"]
+    payload={"buyer_paid_enabled":True,"buyer_paid_template":"Оплата {price} ₽, заказ {order_id}"}
+    assert client.patch("/api/v1/settings",headers=headers,json=payload).status_code==200
+    invalid=client.patch("/api/v1/settings",headers=headers,json={"buyer_delivered_template":"{recipient.password}"})
+    assert invalid.status_code==422
+    assert client.get("/api/v1/settings").json()["buyer_paid_template"]==payload["buyer_paid_template"]
 
 def test_price_preview_returns_configuration_error_without_queue(db,client):
     import time

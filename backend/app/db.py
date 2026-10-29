@@ -48,6 +48,7 @@ class Task(Base):
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 DEFAULTS = {
+    "delivery_transport": "mtproto",
     "emergency_stop": False, "repricing_enabled": False,
     "purchases_enabled": False, "transfers_enabled": False, "promotions_enabled": False,
     "notifications_enabled": False, "delivery_tested": False,
@@ -55,6 +56,9 @@ DEFAULTS = {
     "daily_purchase_limit_rub": "0", "daily_promotion_limit_rub": "0",
     "quote_interval": 3600, "competitor_interval": 900, "quote_max_age": 7200,
     "description_template": "", "owner_chat_id": None, "playerok_account_id": None,
+    "buyer_paid_enabled": False, "buyer_delivered_enabled": False,
+    "buyer_paid_template": "Спасибо за оплату! Заказ {order_id} получен. Готовим заказ к исполнению.",
+    "buyer_delivered_template": "Подарок {gift} передан {recipient}! Ссылка: {gift_link}\nСпасибо за покупку!",
     "playerok_username": None, "bot_offset": None, "orders_baselined": False,
 }
 

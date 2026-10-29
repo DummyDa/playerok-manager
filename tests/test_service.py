@@ -51,8 +51,8 @@ def test_nano_price_normalization_and_exact_model_filter(db,monkeypatch):
     svc=Service(db)
     monkeypatch.setattr(svc.mrkt,"request",lambda *args:{"gifts":[
         {"id":"wrong","collectionName":"Liberty Figure","modelName":"Gold","salePrice":1},
-        {"id":"expensive","collectionName":"Liberty Figure","modelName":"Obsidian","salePrice":2000000000},
-        {"id":"cheap","collectionName":"Liberty Figure","modelName":"Obsidian","salePrice":1000000000}]})
+        {"id":"expensive","collectionName":"Liberty Figure","modelName":"Obsidian","salePrice":2000000000,"nextTransferDate":None},
+        {"id":"cheap","collectionName":"Liberty Figure","modelName":"Obsidian","salePrice":1000000000,"nextTransferDate":None}]})
     assert svc.mrkt.search("Liberty Figure","Obsidian")[0]["id"]=="cheap"
     assert svc.mrkt.ton(1000000000)=="1"
 

@@ -9,7 +9,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_FILES = {"README.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md", "CONTRIBUTING.md", ".gitignore", ".gitattributes", ".env.example", "alembic.ini", "pytest.ini", "requirements.txt", "requirements.lock.txt", "run.bat", "setup.bat", "status.bat", "stop.bat"}
-TREES = {"backend", "frontend", "scripts", "tests", "docs", ".github"}
+ROOT_FILES.add("test-gift-delivery.bat")
+TREES = {"backend", "frontend", "scripts", "tests", "docs", "extension", ".github"}
 SKIP = {"node_modules", ".next", "__pycache__", ".pytest_cache", "test-results", "playwright-report"}
 SUFFIXES = {".py", ".md", ".txt", ".ini", ".json", ".ts", ".tsx", ".css", ".mjs", ".cjs", ".js", ".html", ".svg", ".woff2", ".woff", ".ttf", ".yml", ".yaml", ".bat"}
 

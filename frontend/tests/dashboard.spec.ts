@@ -9,6 +9,92 @@ const connections = { items: [{ id: "playerok", configured: true, status: "CONNE
 const preview = { id: "preview", state: "PREVIEW", action: "promotion", payload: { lot_id: lotId }, expected: { cost_rub: "25", balance: 100 } };
 const events = [{ id: "one", title: "Лоты синхронизированы", detail: "46 объявлений обновлены", action: "sync", level: "INFO", updated_at: Date.now() / 1000 }];
 
+test("zero expense limits save and are described as unlimited", async ({ page }) => {
+  await mock(page);
+  let current={...settings,purchase_limit_rub:"10000",daily_purchase_limit_rub:"10000",daily_promotion_limit_rub:"10000"};
+  const writes:any[]=[];
+  await page.route("**/api/v1/settings",async route=>{
+    if(route.request().method()==="PATCH"){
+      const body=route.request().postDataJSON();writes.push(body);current={...current,...body};
+    }
+    return route.fulfill({json:current});
+  });
+  await page.goto("/settings");
+  await expect(page.getByText("0 — без ограничений. Разрешения на расходы включаются отдельно.",{exact:true})).toBeVisible();
+  for(const label of ["Закупка на заказ, ₽","Закупки за сутки, ₽","Премиум за сутки, ₽"])
+    await page.getByLabel(label,{exact:true}).fill("0");
+  await page.getByRole("button",{name:"Сохранить настройки",exact:true}).click();
+  await expect.poll(()=>writes).toEqual([{purchase_limit_rub:"0",daily_purchase_limit_rub:"0",daily_promotion_limit_rub:"0"}]);
+  await page.reload();
+  await expect(page.getByLabel("Закупка на заказ, ₽",{exact:true})).toHaveValue("0");
+});
+
+test("buyer reply templates save independently and persist after reload", async ({ page }) => {
+  await mock(page);
+  let current = { ...settings, buyer_paid_enabled:false,buyer_delivered_enabled:false,
+    buyer_paid_template:"",buyer_delivered_template:"" };
+  const writes:any[]=[];
+  await page.route("**/api/v1/settings", async route => {
+    if (route.request().method()==="PATCH") {
+      const body=route.request().postDataJSON();writes.push(body);current={...current,...body};
+    }
+    return route.fulfill({json:current});
+  });
+  await page.goto("/settings");
+  await page.getByLabel("Шаблон после оплаты",{exact:true}).fill("Спасибо за оплату заказа {order_id}!");
+  await page.getByLabel("Шаблон после передачи NFT",{exact:true}).fill("Передал {gift}: {gift_link}");
+  await page.getByText("Ответ после оплаты",{exact:true}).click();
+  await page.getByText("Ответ после передачи NFT",{exact:true}).click();
+  await page.getByRole("button",{name:"Сохранить настройки",exact:true}).click();
+  await expect.poll(()=>writes.length).toBe(1);
+  expect(writes[0]).toEqual({buyer_paid_template:"Спасибо за оплату заказа {order_id}!",
+    buyer_delivered_template:"Передал {gift}: {gift_link}",buyer_paid_enabled:true,buyer_delivered_enabled:true});
+  await page.reload();
+  await expect(page.getByLabel("Шаблон после оплаты",{exact:true})).toHaveValue("Спасибо за оплату заказа {order_id}!");
+  await expect(page.getByRole("checkbox",{name:"Ответ после передачи NFT",exact:true})).toBeChecked();
+});
+
+test("order card retries a paused order through the process task", async ({ page }) => {
+  await mock(page);
+  const writes: string[] = [];
+  const order = { id:"retry-order", title:"Chill Flame", stage:"AWAITING_ENABLE", recipient:"buyer",sale_rub:"565",reason:"Реальная закупка и выдача выключены" };
+  await page.route("**/api/v1/orders", route => route.fulfill({ json:{ items:[order],operations:[] } }));
+  await page.route("**/api/v1/orders/retry-order/process", route => {
+    writes.push(route.request().method());
+    return route.fulfill({ json:{ task_id:"retry-task" } });
+  });
+  await page.route("**/api/v1/tasks/retry-task", route => route.fulfill({ json:{ state:"COMPLETE",result:{} } }));
+  await page.goto("/orders");
+  await page.getByRole("button", { name:"Подробнее",exact:true }).click();
+  await page.getByRole("button", { name:"Повторить",exact:true }).click();
+  await expect.poll(() => writes).toEqual(["POST"]);
+  await expect(page.getByRole("dialog",{name:"Карточка заказа"})).toBeVisible();
+  await expect(page.getByText("Заказ запущен без ограничения целевой прибыли",{exact:true})).toBeVisible();
+});
+
+test("order retry is disabled when an earlier transfer needs reconciliation", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/orders", route => route.fulfill({ json:{
+    items:[{id:"retry-order", title:"Chill Flame",stage:"WITHDRAWN",recipient:"buyer"}],
+    operations:[{id:"retry-order:transfer",order_id:"retry-order",action:"order.transfer",state:"UNKNOWN"}]
+  } }));
+  await page.goto("/orders");
+  await page.getByRole("button",{name:"Подробнее",exact:true}).click();
+  await expect(page.getByRole("button",{name:"Повторить",exact:true})).toBeDisabled();
+});
+
+test("manual order before purchase has an enabled retry despite a manual hold", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/orders", route => route.fulfill({ json:{
+    items:[{id:"retry-order",title:"Chill Flame",stage:"MANUAL",manual_hold:true,retry_allowed:true,
+      reason:"Закупка не обеспечивает заданную прибыль"}],
+    operations:[{id:"retry-order:buy",order_id:"retry-order",action:"order.buy",state:"FAILED"}]
+  } }));
+  await page.goto("/orders");
+  await page.getByRole("button",{name:"Подробнее",exact:true}).click();
+  await expect(page.getByRole("button",{name:"Повторить",exact:true})).toBeEnabled();
+});
+
 test("dashboard connection setup completes Telegram code and 2FA steps", async ({ page }) => {
   await mock(page);
   const writes: { path: string; body: any }[] = [];
@@ -49,6 +135,71 @@ test("secret fields stay empty and account changes require pausing active tradin
   await expect(page.getByLabel("Telegram API Hash", { exact: true })).toHaveValue("");
   await expect(page.getByRole("button", { name: "Сохранить бота", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Сохранить ключи", exact: true })).toBeDisabled();
+});
+
+test("Chrome delivery setup saves the transport and shows a one-time pairing code", async ({ page }) => {
+  await mock(page);
+  let current = { ...settings, delivery_transport: "mtproto", delivery_tested: true };
+  const changes: any[] = [];
+  await page.route("**/api/v1/settings", async route => {
+    if (route.request().method() === "PATCH") { const body = route.request().postDataJSON(); changes.push(body); current = { ...current, ...body, delivery_tested: false }; }
+    return route.fulfill({ json: current });
+  });
+  await page.route("**/api/v1/browser-delivery", route => route.fulfill({ json: { paired: false, ready: false, online: false, jobs: [] } }));
+  await page.route("**/api/v1/browser-delivery/pairing", route => route.fulfill({ json: { code: "example-one-time-pairing-code", expires_in: 300 } }));
+  await page.goto("/settings");
+  await page.getByLabel("Способ передачи NFT", { exact: true }).selectOption("chrome_extension");
+  await expect.poll(() => changes).toEqual([{ delivery_transport: "chrome_extension" }]);
+  await expect(page.getByLabel("Способ передачи NFT", { exact: true })).toHaveValue("chrome_extension");
+  await page.getByRole("button", { name: "Получить код подключения", exact: true }).click();
+  await expect(page.getByLabel("Одноразовый код для расширения", { exact: true })).toHaveValue("example-one-time-pairing-code");
+  await expect(page.getByRole("link", { name: "Скачайте расширение", exact: true })).toHaveAttribute("href", "/api/v1/browser-delivery/extension.zip");
+});
+
+test("Kurigram delivery saves the transport and explains reuse of the Telegram account", async ({ page }) => {
+  await mock(page);
+  let current = { ...settings, delivery_transport: "mtproto", delivery_tested: true };
+  const changes: any[] = [];
+  await page.route("**/api/v1/settings", async route => {
+    if (route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON();
+      changes.push(body);
+      current = { ...current, ...body, delivery_tested: false };
+    }
+    return route.fulfill({ json: current });
+  });
+  await page.goto("/settings");
+  await page.getByLabel("Способ передачи NFT", { exact: true }).selectOption("kurigram");
+  await expect.poll(() => changes).toEqual([{ delivery_transport: "kurigram" }]);
+  await expect(page.getByLabel("Способ передачи NFT", { exact: true })).toHaveValue("kurigram");
+  await expect(page.getByText(/Kurigram использует аккаунт из настроек/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Получить код подключения", exact: true })).toBeHidden();
+});
+
+test("saving trading settings does not revert the separately saved transport or test attestation", async ({ page }) => {
+  await mock(page);
+  let current = { ...settings, delivery_transport: "chrome_extension", delivery_tested: true };
+  const changes: any[] = [];
+  await page.route("**/api/v1/settings", async route => {
+    if (route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON();
+      changes.push(body);
+      const switched = body.delivery_transport && body.delivery_transport !== current.delivery_transport;
+      current = { ...current, ...body, ...(switched ? { delivery_tested: false } : {}) };
+    }
+    return route.fulfill({ json: current });
+  });
+  await page.goto("/settings");
+  await page.getByLabel("Закупка на заказ, ₽", { exact: true }).fill("1234");
+  await page.getByLabel("Способ передачи NFT", { exact: true }).selectOption("kurigram");
+  await expect(page.getByLabel("Способ передачи NFT", { exact: true })).toHaveValue("kurigram");
+  await expect(page.getByRole("checkbox", { name: /^Выдача отдельно протестирована мной/ })).not.toBeChecked();
+  await expect(page.getByLabel("Закупка на заказ, ₽", { exact: true })).toHaveValue("1234");
+  await page.getByRole("button", { name: "Сохранить настройки", exact: true }).click();
+  await expect.poll(() => changes).toEqual([{ delivery_transport: "kurigram" }, { purchase_limit_rub: "1234" }]);
+  await page.reload();
+  await expect(page.getByLabel("Способ передачи NFT", { exact: true })).toHaveValue("kurigram");
+  await expect(page.getByRole("checkbox", { name: /^Выдача отдельно протестирована мной/ })).not.toBeChecked();
 });
 
 test("update banner can be postponed and install requires a separate confirmation", async ({ page }) => {

@@ -112,6 +112,27 @@ def test_daily_premium_budget_blocks(db,monkeypatch):
     monkeypatch.setattr(service,"Playerok",lambda _:fake);monkeypatch.setattr(svc,"refresh_lot",lambda _:None)
     svc.execute(op["id"]);fake.promote.assert_not_called()
 
+
+@pytest.mark.parametrize("daily,per_purchase,allowed",[("0","0",True),("0","10",True),("0","5",False),("10","0",False)])
+def test_zero_premium_limits_are_unlimited(db,monkeypatch,daily,per_purchase,allowed):
+    db.configure(promotions_enabled=True,daily_promotion_limit_rub=daily)
+    db.put("lot","l",{"status":"APPROVED","price":100})
+    db.put("promotion_schedule","l",{"enabled":True,"max_cost_rub":per_purchase})
+    svc=Service(db);svc.ledger("previous","promotion",9,"l")
+    op=new_operation(db,"promotion",{"lot_id":"l","automatic":True},{"status_id":"p","cost_rub":"9","lot_price":100})
+    submit(db,op["id"])
+    fake=Mock();fake.premium.return_value={"id":"p","price":9};fake.viewer.return_value={"balance":{"available":100}}
+    fake.promote.return_value={"id":"l","name":"Lot","price":100,"priority":"PREMIUM","priorityPrice":9}
+    monkeypatch.setattr("backend.app.service.Playerok",lambda _:fake)
+    monkeypatch.setattr(svc,"refresh_lot",lambda _:None)
+    svc.execute(op["id"])
+    if allowed:
+        fake.promote.assert_called_once()
+        assert db.get("operation",op["id"])["state"]=="COMPLETE"
+    else:
+        fake.promote.assert_not_called()
+        assert db.get("operation",op["id"])["state"]=="FAILED"
+
 def test_backup_retains_seven_consistent_databases(db):
     folder=db.config.data/"backups";folder.mkdir()
     for i in range(9):(folder/f"2020-01-{i+1:02d}.sqlite3").touch()

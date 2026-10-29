@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Playerok Manager — Telegram Web delivery",
+  "version": "1.2.2",
+  "minimum_chrome_version": "120",
+  "description": "Передача конкретного NFT из очереди локального Playerok Manager в фоновой вкладке Telegram Web A.",
+  "permissions": ["storage", "alarms", "tabs", "scripting"],
+  "host_permissions": ["http://127.0.0.1:8101/*", "https://web.telegram.org/*"],
+  "background": {"service_worker": "background.js"},
+  "options_page": "options.html",
+  "action": {"default_title": "Настройка выдачи Playerok"},
+  "content_scripts": [{"matches": ["https://web.telegram.org/a/*"], "js": ["content.js"], "run_at": "document_idle"}]
+}

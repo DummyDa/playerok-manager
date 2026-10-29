@@ -16,7 +16,8 @@ from .config import Config
 from .db import Database,Entity,Task,Login,uid
 from . import schemas
 from .auth import session,create_session,password_hash,password_valid
-from .operations import new_operation,submit
+from .operations import new_operation,submit,order_retry_reason
+from .order_dates import newest_orders
 from .safety import WriteBlocked,gate,is_nft_lot
 from .pricing import D
 
@@ -41,6 +42,8 @@ def create_app(db:Database|None=None):
     app.include_router(connection_router(db))
     from .updates import router as update_router
     app.include_router(update_router(db))
+    from .browser_delivery import router as browser_router
+    app.include_router(browser_router(db))
     public_origin=db.config.get("PUBLIC_ORIGIN").rstrip("/")
     public_url=urlsplit(public_origin)
     if public_origin and (public_url.scheme!="https" or not public_url.hostname or public_url.path or public_url.query or public_url.fragment or public_url.username):
@@ -55,6 +58,13 @@ def create_app(db:Database|None=None):
             allowed_hosts={"localhost","127.0.0.1","testserver"}
             if public_origin:allowed_hosts.add(urlsplit(public_origin).hostname)
             if request.url.hostname not in allowed_hosts:raise HTTPException(400,"Недопустимый адрес сервера")
+            if path.startswith("/api/v1/browser-bridge/"):
+                import re
+                origin=request.headers.get("origin","")
+                if not re.fullmatch(r"chrome-extension://[a-p]{32}",origin):raise HTTPException(403,"Требуется расширение Chrome")
+                response=Response(status_code=204) if request.method=="OPTIONS" else await call_next(request)
+                response.headers.update({"Access-Control-Allow-Origin":origin,"Access-Control-Allow-Methods":"GET, POST, OPTIONS","Access-Control-Allow-Headers":"Authorization, Content-Type","Vary":"Origin"})
+                return response
             if request.method in {"POST","PATCH","PUT","DELETE"}:
                 origin=request.headers.get("origin")
                 if origin:
@@ -143,6 +153,10 @@ def create_app(db:Database|None=None):
     @app.patch("/api/v1/settings")
     def update_settings(payload:schemas.Settings)->dict:
         data=payload.model_dump(exclude_unset=True,mode="json")
+        if "delivery_transport" in data and data["delivery_transport"]!=db.settings().get("delivery_transport","mtproto"):
+            from .browser_delivery import ACTIVE
+            if any(j["state"] in ACTIVE for j in db.list("browser_job")):raise ValueError("Сначала завершите текущую передачу через Chrome")
+            data["delivery_tested"]=False
         if any(v is None for k,v in data.items() if k!="stars_rub"):raise ValueError("Пустое значение настройки")
         if data.get("notifications_enabled") and old_running():raise ValueError("Старый Playerok Manager запущен на порту 8000. Сначала остановите его, чтобы не запускать двух ботов.")
         if data.get("notifications_enabled") and (not db.config.get("TELEGRAM_BOT_TOKEN") or not (db.settings().get("owner_chat_id") or db.config.get("OWNER_TELEGRAM_USERNAME"))):raise ValueError("Сначала сохраните токен бота и username или Telegram ID владельца")
@@ -402,7 +416,16 @@ def create_app(db:Database|None=None):
 
     @app.get("/api/v1/orders")
     def orders()->dict:
-        return {"items":db.list("order"),"operations":[{k:v for k,v in o.items() if k!="payload"} for o in db.list("operation",300) if o.get("order_id")]}
+        operations=[o for o in db.list("operation",100000) if o.get("order_id")]
+        by_order={}
+        for operation in operations:by_order.setdefault(operation["order_id"],[]).append(operation)
+        spent={e.get("order_id") for e in db.list("ledger",100000)}
+        items=[]
+        for order in newest_orders(db.list("order",100000))[:1000]:
+            reason=order_retry_reason(order,by_order.get(order["id"],[]),order["id"] in spent)
+            if not is_nft_lot(db.get("lot",order.get("lot_id"))):reason="Автовыдача доступна только для привязанного Telegram NFT"
+            items.append({**order,"retry_allowed":reason is None,"retry_reason":reason})
+        return {"items":items,"operations":[{k:v for k,v in o.items() if k!="payload"} for o in operations[:300]]}
 
     @app.post("/api/v1/orders/sync")
     def sync_orders()->dict:return {"task_id":db.enqueue("orders")}
@@ -417,7 +440,21 @@ def create_app(db:Database|None=None):
     @app.post("/api/v1/orders/{id}/process")
     def process_order(id:str)->dict:
         order=db.get("order",id)
-        if not order or order.get("stage") in {"MANUAL","HISTORICAL","CANCELLED","COMPLETE"}:raise ValueError("Заказ требует ручной сверки; автоматический повтор запрещён")
+        operations=[o for o in db.list("operation",100000) if o.get("order_id")==id or o["id"] in {id+":"+a for a in ("buy","withdraw","transfer","mark_sent")}]
+        reason=order_retry_reason(order,operations,any(e.get("order_id")==id for e in db.list("ledger",100000)))
+        if reason:raise ValueError(reason)
+        if not is_nft_lot(db.get("lot",order.get("lot_id"))):raise ValueError("Автовыдача доступна только для привязанного Telegram NFT")
+        with db.sessions() as s:
+            for task in s.scalars(select(Task).where(Task.state=="RUNNING",Task.kind.in_(["process_order","execute"]))):
+                if task.payload.get("order_id")==id or task.payload.get("operation_id") in {o["id"] for o in operations}:
+                    raise ValueError("Обработка заказа уже выполняется")
+        for op in operations:
+            if op.get("state")=="FAILED" and not op.get("submitted_at"):
+                db.put("operation",op["id"],{"state":"RETRY_PENDING","previous_preflight_error":op.get("error"),"error":None})
+        if order.get("stage")=="MANUAL" or order.get("manual_hold"):
+            db.put("order",id,{"stage":"DISCOVERED","manual_hold":False,"reason":"Повторная проверка запрошена владельцем"})
+        db.put("order",id,{"allow_low_profit":True,"profit_override_at":time.time()})
+        db.log("order_retry","Владелец запустил заказ без ограничения целевой прибыли",id,order_id=id)
         return {"task_id":db.enqueue("process_order",{"order_id":id},key="order:"+id)}
 
     @app.get("/api/v1/finance")

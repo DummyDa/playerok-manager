@@ -11,6 +11,7 @@ import requests
 from .db import Database, uid
 from .pricing import D, calculate, calculate_with_premium, required_profit, net_coefficients, PricingError, PremiumQuoteRequired
 from .integrations.clients import Playerok, Mrkt, Bot, normalized, gate, IntegrationError, ManualRequired
+from .integrations.mrkt_availability import gift_block_reason
 from .safety import is_nft_lot
 from .operations import new_operation
 
@@ -110,11 +111,13 @@ class Service:
         pair=self.db.get("pair",pair_id)
         if not pair: raise ValueError("Пара не найдена")
         old=self.db.get("quote",pair_id)
-        if not force and old and old.get("available") and time.time()-old.get("fetched_at",0)<self.db.settings()["quote_interval"]: return old
+        if (not force and old and old.get("available")
+                and gift_block_reason(old.get("gift") or {}) is None
+                and time.time()-old.get("fetched_at",0)<self.db.settings()["quote_interval"]): return old
         gifts=self.mrkt.search(pair["collection"],pair["model"])
         if not gifts:
-            self.db.put("quote",pair_id,{"available":False,"fetched_at":time.time(),"reason":"Точная модель не найдена"})
-            self.notice("no-model:"+pair_id,"Нужная модель отсутствует",pair["collection"]+" — "+pair["model"])
+            self.db.put("quote",pair_id,{"available":False,"fetched_at":time.time(),"reason":"Нет предложений точной модели, доступных для немедленной передачи"})
+            self.notice("no-model:"+pair_id,"Нет доступных подарков нужной модели",pair["collection"]+" — "+pair["model"])
             return None
         gift=gifts[0]
         result={"available":True,"fetched_at":time.time(),"ton":self.mrkt.ton(gift["salePrice"]),"gift":gift,"offers_in_page":len(gifts)}
@@ -274,12 +277,12 @@ class Service:
                 tariff=client.premium(lot["id"],lot["price"])
                 if tariff["id"]!=expected["status_id"] or D(tariff["price"])!=D(expected["cost_rub"]): raise ValueError("Стоимость премиума изменилась")
                 limit=D(self.db.settings()["daily_promotion_limit_rub"])
-                if self.daily_spent("promotion",op_id)+D(expected["cost_rub"])>limit: raise ValueError("Дневной бюджет премиума исчерпан с учётом неопределённых списаний")
+                if limit!=0 and self.daily_spent("promotion",op_id)+D(expected["cost_rub"])>limit: raise ValueError("Дневной бюджет премиума исчерпан с учётом неопределённых списаний")
                 if any(o["id"]!=op_id and o.get("action")=="promotion" and o.get("state") in {"SUBMITTED","UNKNOWN"} and o.get("payload",{}).get("lot_id")==payload["lot_id"] for o in self.db.list("operation",100000)):
                     raise ManualRequired("Результат предыдущего поднятия этого лота ещё не проверен")
                 schedule=self.db.get("promotion_schedule",lot["id"])
                 if payload.get("automatic") and (not schedule or not schedule.get("enabled")): raise ValueError("Расписание отключено")
-                if schedule and D(expected["cost_rub"])>D(schedule.get("max_cost_rub",0)): raise ValueError("Премиум превышает лимит одной покупки")
+                if schedule and D(schedule.get("max_cost_rub",0))!=0 and D(expected["cost_rub"])>D(schedule["max_cost_rub"]): raise ValueError("Премиум превышает лимит одной покупки")
                 balance=(client.viewer().get("balance") or {}).get("available")
                 if balance is None or D(balance)<D(expected["cost_rub"]): raise ValueError("Недостаточно средств Playerok")
             elif action.startswith("order."):
@@ -288,6 +291,9 @@ class Service:
                 self.refresh_lot(payload["lot_id"])
                 if self.db.get("lot",payload["lot_id"]).get("status")!="APPROVED":raise ValueError("Объявление больше не активно")
             gate(self.db)
+            if action=="order.transfer" and self.db.settings().get("delivery_transport")=="chrome_extension":
+                from .browser_delivery import enqueue
+                return enqueue(self.db,op)
             self.db.put("operation",op_id,{"state":"SUBMITTED","submitted_at":time.time()})
             if action=="price":
                 result=client.update(payload["lot_id"],{"price":payload["price"]})
@@ -330,7 +336,22 @@ class Service:
         for order in Playerok(self.db).orders():
             old=self.db.get("order",order["id"])
             if old:
-                self.db.put("order",order["id"],{"playerok_status":order["status"]})
+                metadata={"playerok_status":order["status"]}
+                if not old.get("created_at") and order.get("created_at"):metadata["created_at"]=order["created_at"]
+                self.db.put("order",order["id"],metadata)
+                # Repair only a system classification made before a sold-item
+                # snapshot could be linked to the original listing. Never resume
+                # human holds or orders that have already started spending.
+                if (old.get("stage")=="MANUAL" and not old.get("manual_hold")
+                        and not old.get("cancel_requested") and old.get("source")!="legacy"
+                        and old.get("reason")=="Обычный товар: закупка MRKT и автоматическая выдача не применяются"
+                        and not old.get("gift_slug") and not old.get("mrkt_gift_id")
+                        and order["status"]=="PAID" and is_nft_lot(self.db.get("lot",order.get("lot_id")))
+                        and not self.db.get("processed",order["id"])
+                        and not any(self.db.get("operation",order["id"]+":"+action) for action in ("buy","withdraw","transfer","mark_sent"))):
+                    self.db.put("order",order["id"],{**order,"stage":"DISCOVERED","reason":"Привязка исходного лота восстановлена по точному slug"})
+                    self.db.enqueue("process_order",{"order_id":order["id"]},key="order:"+order["id"])
+                    continue
                 if not is_nft_lot(self.db.get("lot",old.get("lot_id"))):
                     if old.get("stage") not in {"COMPLETE","HISTORICAL","CANCELLED","MANUAL"}:
                         self.db.put("order",order["id"],{"stage":"MANUAL","reason":"Обычный товар: закупка MRKT и автоматическая выдача не применяются"})
@@ -348,6 +369,9 @@ class Service:
             if data["stage"]=="DISCOVERED" and not is_nft_lot(self.db.get("lot",order.get("lot_id"))):
                 data.update(stage="MANUAL",reason="Обычный товар: закупка MRKT и автоматическая выдача не применяются")
             self.db.put("order",order["id"],data)
+            if not historical and order["status"]=="PAID":
+                from .buyer_messages import queue
+                queue(self.db,self.db.get("order",order["id"]),"paid")
             if data["stage"]=="DISCOVERED":
                 self.notice("order:"+order["id"],"Новый оплаченный заказ",order["title"])
                 self.db.enqueue("process_order",{"order_id":order["id"]},key="order:"+order["id"])
@@ -366,7 +390,12 @@ class Service:
             self.db.put("order",id,{"stage":"AWAITING_ENABLE","reason":"Реальная закупка и выдача выключены"});return
         gate(self.db)
         stage=order["stage"]
-        if stage in {"DISCOVERED","AWAITING_ENABLE","CHECK_PRICE"}:
+        if stage in {"DISCOVERED","AWAITING_ENABLE","WAITING_DATA","CHECK_PRICE"}:
+            if settings.get("delivery_transport")=="chrome_extension":
+                from .browser_delivery import status
+                if not status(self.db)["ready"]:
+                    self.db.put("order",id,{"stage":"AWAITING_ENABLE","reason":"Ожидание Chrome: откройте Chrome и войдите в Telegram Web A"})
+                    return
             fresh=next((o for o in Playerok(self.db).orders() if o["id"]==id),None)
             if not fresh or fresh["status"]!="PAID": raise ManualRequired("Оплата не подтверждена свежими данными Playerok")
             lot=self.db.get("lot",order.get("lot_id"))
@@ -381,7 +410,9 @@ class Service:
             self.db.put("order",id,{"stage":"CHECK_PRICE","recipient":recipient,"recipient_id":recipient_id,"sale_rub":fresh["sale_rub"]})
             quote=self.quote(lot["pair_id"],force=True)
             estimate=self.estimate(lot["id"],sale=fresh["sale_rub"],quote=quote)
-            if not estimate["profitable"]: raise ManualRequired("Закупка не обеспечивает заданную прибыль")
+            if not estimate["profitable"] and not order.get("allow_low_profit"):
+                raise ManualRequired("Закупка не обеспечивает заданную прибыль")
+            estimate["profit_overridden"]=bool(order.get("allow_low_profit"))
             gift=quote["gift"]
             slug=gift.get("slug") or gift.get("giftSlug") or gift.get("name")
             if not slug or not re.fullmatch(r"[A-Za-z0-9]+-\d+",slug): raise ManualRequired("MRKT не вернул уникальный slug; закупка остановлена")
@@ -398,14 +429,37 @@ class Service:
             if saved["can_transfer_at"]>time.time(): raise ManualRequired("Telegram ограничил время передачи NFT")
             self.make_order_operation(id,"transfer",{"saved":saved,"recipient":order["recipient"],"recipient_id":order["recipient_id"]},order["snapshot"])
         elif stage=="TRANSFERRED":
-            owner=self.mrkt.owner(order["gift_slug"])
-            if owner!=order["recipient_id"]: raise ManualRequired("Владелец NFT не подтверждён; повторная передача запрещена")
+            if not self.delivery_confirmed(order): raise ManualRequired("Владелец NFT не подтверждён; повторная передача запрещена")
+            from .buyer_messages import queue
+            queue(self.db,order,"delivered")
             self.make_order_operation(id,"mark_sent",{},order["snapshot"])
+
+    def delivery_confirmed(self, order):
+        owner=self.mrkt.owner(order["gift_slug"])
+        if owner==order["recipient_id"]:return True
+        if owner is not None:return False
+        transfer=self.db.get("operation",order["id"]+":transfer") or {}
+        if not transfer.get("submitted_at"):return False
+        saved=transfer.get("payload",{}).get("saved",{})
+        receipt=self.mrkt.transfer_receipt(order["gift_slug"],order["recipient"],order["recipient_id"],
+                                          transfer["submitted_at"],saved.get("msg_id",0))
+        if not receipt:return False
+        self.db.put("order",order["id"],{"transfer_verification":"telegram_service_message","transfer_receipt":receipt})
+        return True
 
     def make_order_operation(self, order_id, action, payload, expected):
         op_id=order_id+":"+action
         existing=self.db.get("operation",op_id)
         if existing:
+            # Readiness is checked before SUBMITTED. This specific failure never
+            # reached a purchase request and may be rebuilt from a fresh quote.
+            if (existing["state"]=="RETRY_PENDING" or
+                    (action=="buy" and existing["state"]=="FAILED" and not existing.get("submitted_at")
+                     and existing.get("error")=="Расширение Chrome не готово: откройте Chrome и войдите в Telegram Web A")):
+                op=self.db.put("operation",op_id,{"state":"QUEUED","payload":payload,"expected":expected,
+                    "previous_preflight_error":existing.get("previous_preflight_error") or existing.get("error"),"error":None})
+                self.db.enqueue("execute",{"operation_id":op_id},key="execute:"+op_id)
+                return op
             if existing["state"] in {"UNKNOWN","FAILED"}: raise ManualRequired("Предыдущая операция требует сверки")
             return existing
         op=self.db.put("operation",op_id,{"order_id":order_id,"action":"order."+action,"state":"QUEUED","payload":payload,"expected":expected})
@@ -421,6 +475,12 @@ class Service:
         if not order or order.get("manual_hold") or order.get("cancel_requested") or order.get("stage") in {"MANUAL","CANCELLED","COMPLETE"}: raise ManualRequired("Заказ остановлен")
         if op["action"]=="order.buy":
             gate(self.db,"purchases")
+            if s.get("delivery_transport")=="kurigram":
+                from .integrations.kurigram_delivery import require_kurigram
+                require_kurigram()
+            if s.get("delivery_transport")=="chrome_extension":
+                from .browser_delivery import require_ready
+                require_ready(self.db)
             fresh=next((o for o in Playerok(self.db).orders() if o["id"]==order["id"]),None)
             if not fresh or fresh["status"]!="PAID": raise ManualRequired("Оплата больше не подтверждена")
             lot=self.db.get("lot",order["lot_id"])
@@ -428,9 +488,13 @@ class Service:
             if not quote or str(quote["gift"]["id"])!=str(op["payload"]["gift"]["id"]) or D(quote["gift"]["salePrice"])!=D(op["payload"]["gift"]["salePrice"]):
                 raise ManualRequired("Минимальное предложение изменилось; нужна повторная проверка заказа")
             snapshot=self.estimate(order["lot_id"],sale=order["sale_rub"],quote=quote,refresh_premium=True)
-            if not snapshot["profitable"]: raise ManualRequired("Прибыль изменилась")
+            if not snapshot["profitable"] and not order.get("allow_low_profit"):
+                raise ManualRequired("Прибыль изменилась")
             cost=D(snapshot["purchase_rub"])
-            if cost>D(s["purchase_limit_rub"]) or self.daily_spent("purchase")+cost>D(s["daily_purchase_limit_rub"]): raise ManualRequired("Лимит закупки превышен")
+            per_order_limit,daily_limit=D(s["purchase_limit_rub"]),D(s["daily_purchase_limit_rub"])
+            if ((per_order_limit!=0 and cost>per_order_limit)
+                    or (daily_limit!=0 and self.daily_spent("purchase")+cost>daily_limit)):
+                raise ManualRequired("Лимит закупки превышен")
             balance=self.mrkt.balances()
             if D(balance["mrkt_ton"])<D(snapshot["quote_ton"]): raise ManualRequired("Недостаточно TON на MRKT")
             if balance["stars"]<s["transfer_stars_reserve"]: raise ManualRequired("Недостаточно Stars")
@@ -441,6 +505,9 @@ class Service:
             reserve=D(op["expected"]["transfer_rub"])
             if D(saved["transfer_stars"])*D(s["stars_rub"])>reserve: raise ManualRequired("Передача дороже резерва в расчёте")
             if saved["can_transfer_at"]>time.time(): raise ManualRequired("Передача пока недоступна")
+        elif op["action"]=="order.mark_sent":
+            # Confirmation is a separate guarded step, including after restart.
+            if not self.delivery_confirmed(order):raise ManualRequired("Владелец конкретного NFT не подтверждён")
 
     def execute_order_operation(self, op):
         order=self.db.get("order",op["order_id"]);p=op["payload"];action=op["action"]
@@ -475,9 +542,27 @@ class Service:
     def reconcile(self, op_id):
         op=self.db.get("operation",op_id)
         if not op or op.get("state")!="UNKNOWN": raise ValueError("Нет неопределённой операции")
+        browser_job=self.db.get("browser_job",op_id)
+        if browser_job:
+            from .browser_delivery import tick
+            self.db.put("browser_job",op_id,{"state":"VERIFYING","submitted_at":time.time()-121})
+            tick(self)
+            return
+        if op["action"]=="order.buy":
+            owned=self.mrkt.owned_gift(op["payload"]["gift"])
+            if owned:
+                order=self.db.get("order",op["order_id"])
+                self.ledger(op_id,"purchase",op["expected"]["purchase_rub"],order["lot_id"],order["id"],snapshot=op["expected"])
+                stopped=order.get("manual_hold") or order.get("cancel_requested")
+                self.db.put("order",order["id"],{"stage":"MANUAL" if stopped else "PURCHASED",
+                    "mrkt_gift_id":str(owned["id"]),"reason":"Покупка подтверждена по инвентарю MRKT"})
+                self.db.put("operation",op_id,{"state":"COMPLETE","reconciled":True,"verification":"mrkt_inventory",
+                    "result":{"gift_id":str(owned["id"])},"error":None})
+                if not stopped:self.db.enqueue("process_order",{"order_id":order["id"]},key="order:"+order["id"])
+                return
         if op["action"]=="order.transfer":
             order=self.db.get("order",op["order_id"])
-            if self.mrkt.owner(order["gift_slug"])==order["recipient_id"]:
+            if self.delivery_confirmed(order):
                 self.db.put("operation",op_id,{"state":"COMPLETE","reconciled":True})
                 self.db.put("order",order["id"],{"stage":"TRANSFERRED"})
                 return
