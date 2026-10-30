@@ -15,11 +15,95 @@ def prepare(db):
     db.put("fx","ton-rub",{"rate":"100","source_at":time.time()})
 
 
+def test_paid_margin_is_available_even_when_target_price_exceeds_listing_ceiling(db):
+    prepare(db)
+    db.put("strategy","default",{"profit_value":50,"max_price":160})
+    service=Service(db)
+    with pytest.raises(PricingError,match="максимум"):service.estimate("l")
+    result=service.estimate("l",sale=151)
+    assert D(result["actual_profit_rub"])==1
+    assert result["profitable"] is False  # below listing target, still nonnegative
+
+
+def test_preview_refreshes_stale_fx_in_worker_and_api_only_queues(db,monkeypatch):
+    prepare(db);db.put("fx","ton-rub",{"source_at":0})
+    refresh=Mock(side_effect=lambda self:db.put("fx","ton-rub",{"rate":"80","source_at":time.time()}))
+    monkeypatch.setattr(Service,"refresh_fx",lambda self:refresh(self))
+    with TestClient(create_app(db)) as api:
+        login=api.post("/api/v1/auth/setup",json={"password":"fx-refresh-password"})
+        api.headers["X-CSRF-Token"]=login.json()["csrf"]
+        result=api.post("/api/v1/pricing/l/preview").json()
+        assert result["task_id"]
+        refresh.assert_not_called()
+        from backend.app.worker import Worker
+        op=Worker(db).dispatch("preview_price",{"lot_id":"l"})
+        assert D(op["expected"]["ton_rub"])==80
+        assert not op["expected"]["fx_stale"]
+        refresh.assert_called_once()
+
+
+@pytest.mark.parametrize("failed",[True,False])
+def test_failed_fx_refresh_allows_only_labelled_stale_preview(db,monkeypatch,failed):
+    from backend.app.pricing import FxQuoteRequired
+    prepare(db);db.put("fx","ton-rub",{"source_at":0})
+    service=Service(db)
+    refresh=Mock(side_effect=RuntimeError("provider down") if failed else None)
+    monkeypatch.setattr(service,"refresh_fx",refresh)
+    op=service.preview_price("l")
+    assert op["expected"]["fx_stale"] and op["expected"]["fx_warning"]
+    assert D(op["expected"]["ton_rub"])==100
+    with pytest.raises(FxQuoteRequired):service.estimate("l")
+    assert db.list("ledger")==[]
+
+
+def test_no_saved_fx_does_not_invent_fallback_rate(db,monkeypatch):
+    prepare(db)
+    monkeypatch.setattr("backend.app.service.effective_fx",lambda db:None)
+    service=Service(db);monkeypatch.setattr(service,"refresh_fx",Mock(side_effect=RuntimeError("down")))
+    with pytest.raises(PricingError,match="Нет сохранённого курса"):service.preview_price("l")
+
+
+def test_manual_ton_rate_applies_to_purchase_ton_fees_and_paid_profit(db):
+    prepare(db)
+    db.configure(ton_rate_mode="manual",manual_ton_rub="80")
+    db.put("fx","ton-rub",{"rate":"100","source_at":0})
+    db.put("fees","default",{"configured":True,"fees":[
+        {"type":"percent","value":"10","basis":"sale"},
+        {"type":"ton","value":"0.5"}]})
+    result=Service(db).estimate("l",sale=200)
+    assert Service(db).estimate("l")["fx_at"]==result["fx_at"]
+    assert D(result["purchase_rub"])==80
+    assert D(result["ton_rub"])==80
+    assert D(result["actual_net_rub"])==140  # 200 - 20 - .5 * 80
+    assert D(result["actual_profit_rub"])==10  # net - purchase 80 - Stars 50
+    Service(db).refresh_fx()  # no network and no overwrite in manual mode
+    assert db.get("fx","ton-rub")["rate"]=="100"
+    db.configure(ton_rate_mode="auto")
+    with pytest.raises(PricingError,match="устарел"):Service(db).estimate("l")
+
+
 def premium_lot(db,monkeypatch):
     prepare(db);db.put("lot","l",{"premium":True,"price":200})
     client=Mock();client.premium.side_effect=lambda lot,price:{"id":"premium-"+str(price),"price":str(D(price)/10)}
     monkeypatch.setattr("backend.app.service.Playerok",lambda db:client)
     return client
+
+
+def test_manually_planned_premium_is_counted_before_purchase_and_survives_sync(db,monkeypatch):
+    client=premium_lot(db,monkeypatch)
+    db.put("lot","l",{"premium":False,"premium_planned":True})
+    db.put("strategy","default",{"premium_mode":"exclude"})
+    service=Service(db)
+    planned=service.estimate("l",sale=200)
+    assert planned["premium_included"] and D(planned["paid_promotion_rub"])==20
+    assert D(planned["actual_profit_rub"])==30
+    client.lots.return_value=[{"id":"l","name":"Gift","price":200,"status":"APPROVED","premium":False}]
+    service.sync_lots()
+    assert db.get("lot","l")["premium_planned"] is True
+    assert not db.get("lot","l")["premium"]
+    assert db.list("ledger")==[] and db.list("operation")==[]
+    db.put("lot","l",{"premium_planned":False})
+    assert not service.estimate("l")["premium_included"]
 
 def test_premium_auto_detection_cache_and_exact_tariff_for_both_prices(db,monkeypatch):
     client=premium_lot(db,monkeypatch);service=Service(db)

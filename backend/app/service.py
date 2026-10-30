@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 import requests
 from .db import Database, uid
-from .pricing import D, calculate, calculate_with_premium, required_profit, net_coefficients, PricingError, PremiumQuoteRequired
+from .pricing import D, calculate, calculate_with_premium, required_profit, net_coefficients, effective_fx, PricingError, PremiumQuoteRequired, FxQuoteRequired
 from .integrations.clients import Playerok, Mrkt, Bot, normalized, gate, IntegrationError, ManualRequired
 from .integrations.mrkt_availability import gift_block_reason
 from .safety import is_nft_lot
@@ -79,6 +79,7 @@ class Service:
         self.db.put("lot",id,normalized(data))
 
     def refresh_fx(self):
+        if self.db.settings().get("ton_rate_mode","auto")=="manual":return
         r=requests.get("https://api.coingecko.com/api/v3/simple/price",params={"ids":"the-open-network","vs_currencies":"rub","include_last_updated_at":"true"},timeout=15)
         r.raise_for_status();p=r.json()["the-open-network"]
         if D(p["rub"])<=0: raise IntegrationError("Некорректный курс TON")
@@ -169,15 +170,16 @@ class Service:
         self.db.put("premium_quotes",lot_id,{"prices":prices},merge=False)
         return saved
 
-    def estimate(self, lot_id, sale=None, quote=None, allow_network=True, refresh_premium=False):
+    def estimate(self, lot_id, sale=None, quote=None, allow_network=True, refresh_premium=False, allow_stale_fx=False):
         lot=self.db.get("lot",lot_id)
         if not is_nft_lot(lot): raise PricingError("Расчёт MRKT доступен только для Telegram NFT с привязкой коллекции и модели")
         settings=self.db.settings()
         quote=quote or self.db.get("quote",lot["pair_id"])
-        fx=self.db.get("fx","ton-rub")
+        fx=effective_fx(self.db)
         if not quote or not quote.get("available"): raise PricingError("Нет подходящих предложений MRKT")
         if time.time()-quote.get("fetched_at",0)>settings["quote_max_age"]: raise PricingError("Цена MRKT устарела")
-        if not fx or time.time()-fx.get("source_at",0)>900: raise PricingError("Курс TON устарел")
+        fx_stale=bool(fx and not fx.get("manual") and time.time()-fx.get("source_at",0)>900)
+        if not fx or (fx_stale and not allow_stale_fx): raise FxQuoteRequired("Курс TON устарел")
         if settings["stars_rub"] is None: raise PricingError("Задайте себестоимость Stars")
         profile=self.db.get("fees",lot.get("fee_profile_id","default")) or {}
         strategy={**(self.db.get("strategy") or {}),**(lot.get("strategy") or {})}
@@ -191,31 +193,50 @@ class Service:
         competitor=min(rivals) if rivals and strategy.get("use_competitor",False) else None
         purchase=D(quote["ton"])*D(fx["rate"])
         transfer=D(settings["transfer_stars_reserve"])*D(settings["stars_rub"])
-        result=calculate(purchase,transfer,profile,strategy,competitor)
+        # A paid order cannot be repriced: listing profit targets/price ceilings must
+        # not prevent evaluating its actual margin at the already paid price.
+        calculation_strategy={**strategy,"profit_value":0,"max_price":None} if sale is not None else strategy
+        result=calculate(purchase,transfer,profile,calculation_strategy,competitor,ton_rub=fx["rate"])
         mode=strategy.get("premium_mode","auto")
         schedule=self.db.get("promotion_schedule",lot_id) or {}
-        include=mode=="include" or (mode=="auto" and (lot.get("premium",False) or schedule.get("enabled",False)))
+        include=bool(lot.get("premium_planned")) or mode=="include" or (mode=="auto" and (lot.get("premium",False) or schedule.get("enabled",False)))
         count=int(strategy.get("premium_purchases_per_sale",1)) if include else 0
         if include:
             if refresh_premium and allow_network:self.db.put("premium_quotes",lot_id,{"prices":{}},merge=False)
-            result=calculate_with_premium(purchase,transfer,profile,strategy,lambda price:D(self.premium_quote(lot_id,price,allow_network)["cost_rub"])*count,competitor)
+            result=calculate_with_premium(purchase,transfer,profile,calculation_strategy,lambda price:D(self.premium_quote(lot_id,price,allow_network)["cost_rub"])*count,competitor,ton_rub=fx["rate"])
             tariff=self.premium_quote(lot_id,result["sale_price"],allow_network)
             result.update(premium_unit_rub=tariff["cost_rub"],premium_quote_at=tariff["checked_at"],premium_quote_price=tariff["price"])
-        result.update(premium_included=include,premium_count=count)
+        result.update(premium_included=include,premium_count=count,premium_planned=bool(lot.get("premium_planned")))
         paid=sale if sale is not None else lot.get("price")
         if paid is not None:
-            a,b=net_coefficients(profile.get("fees",[]),purchase)
+            a,b=net_coefficients(profile.get("fees",[]),purchase,fx["rate"])
             net=a*D(paid)+b
             paid_premium=D(self.premium_quote(lot_id,paid,allow_network)["cost_rub"])*count if include else D(0)
             profit=net-purchase-transfer-paid_premium
             result.update(current_price_rub=str(paid),current_profit_rub=str(profit),current_promotion_rub=str(paid_premium))
             if sale is not None:
                 result.update({"paid_sale_rub":str(sale),"actual_net_rub":str(net),"actual_profit_rub":str(profit),"paid_promotion_rub":str(paid_premium),"profitable":profit>=required_profit(purchase,sale,strategy)})
-        return {**result,"lot_id":lot_id,"pair_id":lot["pair_id"],"ton_rub":fx["rate"],"quote_ton":quote["ton"],
+        return {**result,"lot_id":lot_id,"pair_id":lot["pair_id"],"ton_rub":fx["rate"],"quote_ton":quote["ton"],"fx_stale":fx_stale,
                 "fee_profile":profile,"strategy":strategy,"quote_at":quote["fetched_at"],"fx_at":fx["source_at"],"estimated_at":time.time()}
 
     def preview_price(self, lot_id, allow_network=True):
-        result=self.estimate(lot_id) if allow_network else self.estimate(lot_id,allow_network=False)
+        try:
+            result=self.estimate(lot_id) if allow_network else self.estimate(lot_id,allow_network=False)
+        except FxQuoteRequired:
+            if not allow_network:raise
+            warning=""
+            try:
+                self.refresh_fx()
+            except Exception:
+                warning="Не удалось обновить курс TON. Расчёт выполнен по последнему сохранённому курсу; он устарел. Для применения цены обновите курс или задайте свой в настройках."
+            try:
+                result=self.estimate(lot_id)
+            except FxQuoteRequired:
+                fx=effective_fx(self.db)
+                if not fx or D(fx.get("rate",0))<=0:
+                    raise PricingError("Нет сохранённого курса TON. Повторите расчёт позже или задайте свой курс в настройках.") from None
+                result=self.estimate(lot_id,allow_stale_fx=True)
+                result["fx_warning"]=warning or "Источник вернул устаревший курс TON. Показан расчёт по последнему сохранённому курсу. Для применения цены обновите курс или задайте свой в настройках."
         self.db.put("estimate",lot_id,{**result,"status":"READY"},merge=False)
         return new_operation(self.db,"price",{"lot_id":lot_id,"price":result["sale_price"]},expected=result)
 
@@ -410,9 +431,9 @@ class Service:
             self.db.put("order",id,{"stage":"CHECK_PRICE","recipient":recipient,"recipient_id":recipient_id,"sale_rub":fresh["sale_rub"]})
             quote=self.quote(lot["pair_id"],force=True)
             estimate=self.estimate(lot["id"],sale=fresh["sale_rub"],quote=quote)
-            if not estimate["profitable"] and not order.get("allow_low_profit"):
-                raise ManualRequired("Закупка не обеспечивает заданную прибыль")
-            estimate["profit_overridden"]=bool(order.get("allow_low_profit"))
+            self.db.put("order",id,{"snapshot":estimate})
+            if D(estimate["actual_profit_rub"])<0:
+                raise ManualRequired("Заказ убыточен: ожидаемая прибыль "+str(D(estimate["actual_profit_rub"]))+" ₽. Закупка остановлена")
             gift=quote["gift"]
             slug=gift.get("slug") or gift.get("giftSlug") or gift.get("name")
             if not slug or not re.fullmatch(r"[A-Za-z0-9]+-\d+",slug): raise ManualRequired("MRKT не вернул уникальный slug; закупка остановлена")
@@ -485,11 +506,11 @@ class Service:
             if not fresh or fresh["status"]!="PAID": raise ManualRequired("Оплата больше не подтверждена")
             lot=self.db.get("lot",order["lot_id"])
             quote=self.quote(lot["pair_id"],force=True)
-            if not quote or str(quote["gift"]["id"])!=str(op["payload"]["gift"]["id"]) or D(quote["gift"]["salePrice"])!=D(op["payload"]["gift"]["salePrice"]):
-                raise ManualRequired("Минимальное предложение изменилось; нужна повторная проверка заказа")
-            snapshot=self.estimate(order["lot_id"],sale=order["sale_rub"],quote=quote,refresh_premium=True)
-            if not snapshot["profitable"] and not order.get("allow_low_profit"):
-                raise ManualRequired("Прибыль изменилась")
+            if not quote or not quote.get("gift"):raise ManualRequired("Нет подходящих предложений MRKT")
+            snapshot=self.estimate(order["lot_id"],sale=fresh["sale_rub"],quote=quote,refresh_premium=True)
+            self.db.put("order",order["id"],{"snapshot":snapshot,"sale_rub":fresh["sale_rub"]})
+            if D(snapshot["actual_profit_rub"])<0:
+                raise ManualRequired("Заказ убыточен: ожидаемая прибыль "+str(D(snapshot["actual_profit_rub"]))+" ₽. Закупка остановлена")
             cost=D(snapshot["purchase_rub"])
             per_order_limit,daily_limit=D(s["purchase_limit_rub"]),D(s["daily_purchase_limit_rub"])
             if ((per_order_limit!=0 and cost>per_order_limit)
@@ -498,6 +519,14 @@ class Service:
             balance=self.mrkt.balances()
             if D(balance["mrkt_ton"])<D(snapshot["quote_ton"]): raise ManualRequired("Недостаточно TON на MRKT")
             if balance["stars"]<s["transfer_stars_reserve"]: raise ManualRequired("Недостаточно Stars")
+            gift=quote["gift"]
+            slug=gift.get("slug") or gift.get("giftSlug") or gift.get("name")
+            if not slug or not re.fullmatch(r"[A-Za-z0-9]+-\d+",slug):raise ManualRequired("MRKT не вернул уникальный slug; закупка остановлена")
+            # The worker has not submitted a purchase yet: use the freshly checked offer and costs.
+            op["payload"]={**op["payload"],"gift":gift,"slug":slug}
+            op["expected"]=snapshot
+            if op.get("id"):self.db.put("operation",op["id"],{"payload":op["payload"],"expected":snapshot})
+            self.db.put("order",order["id"],{"gift_slug":slug})
         elif op["action"]=="order.transfer":
             gate(self.db,"transfers")
             saved=self.mrkt.saved(order["gift_slug"])

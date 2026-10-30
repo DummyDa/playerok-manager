@@ -53,6 +53,7 @@ DEFAULTS = {
     "purchases_enabled": False, "transfers_enabled": False, "promotions_enabled": False,
     "notifications_enabled": False, "delivery_tested": False,
     "stars_rub": None, "transfer_stars_reserve": 25, "purchase_limit_rub": "0",
+    "ton_rate_mode": "auto", "manual_ton_rub": None,
     "daily_purchase_limit_rub": "0", "daily_promotion_limit_rub": "0",
     "quote_interval": 3600, "competitor_interval": 900, "quote_max_age": 7200,
     "description_template": "", "owner_chat_id": None, "playerok_account_id": None,

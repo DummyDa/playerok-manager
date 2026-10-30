@@ -21,6 +21,8 @@ class Settings(Strict):
     notifications_enabled:bool|None=None
     delivery_tested:bool|None=None
     stars_rub:Decimal|None=Field(default=None,ge=0)
+    ton_rate_mode:Literal["auto","manual"]|None=None
+    manual_ton_rub:Decimal|None=Field(default=None,gt=0)
     transfer_stars_reserve:int|None=Field(default=None,ge=0,le=100000)
     purchase_limit_rub:Decimal|None=Field(default=None,ge=0)
     daily_purchase_limit_rub:Decimal|None=Field(default=None,ge=0)
@@ -43,7 +45,7 @@ class Settings(Strict):
 
 class Fee(Strict):
     name:str=Field(min_length=1,max_length=100)
-    type:Literal["fixed","percent"]
+    type:Literal["fixed","percent","ton"]
     value:Decimal=Field(ge=0)
     basis:Literal["sale","remaining","purchase"]="remaining"
     include_fixed:bool=False
@@ -82,6 +84,7 @@ class Pair(Strict):
     enabled:bool=True
 
 class Binding(Strict):
+    premium_planned:bool|None=None
     pair_id:str|None=None
     delivery_mode:Literal["manual","telegram_nft"]="telegram_nft"
     fee_profile_id:str="default"
@@ -117,6 +120,7 @@ class ResolveOrder(Strict):
     reason:str=Field(min_length=1,max_length=1000)
 
 class QuoteInput(Strict):pair_id:str
+class PremiumCalculation(Strict):premium_planned:bool
 class ModelsInput(Strict):collection:str=Field(min_length=1,max_length=120)
 class CheckInput(Strict):name:Literal["all","playerok","mrkt","telegram"]="all"
 class ExecuteInput(Strict):operation_id:str

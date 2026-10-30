@@ -20,6 +20,63 @@ def test_auth_required_and_csrf_enforced(client):
     assert client.patch("/api/v1/settings",headers=headers,json={"stars_rub":"2"}).status_code==200
 
 
+def test_manual_exchange_rate_settings_and_ton_fee_profile(client):
+    headers=authenticate(client)
+    assert client.patch("/api/v1/settings",headers=headers,json={"ton_rate_mode":"manual"}).status_code==400
+    for value in [0,-1,"NaN"]:
+        assert client.patch("/api/v1/settings",headers=headers,json={"manual_ton_rub":value}).status_code==422
+    saved=client.patch("/api/v1/settings",headers=headers,json={"ton_rate_mode":"manual","manual_ton_rub":"85.25"})
+    assert saved.status_code==200
+    assert client.get("/api/v1/settings").json()["manual_ton_rub"]=="85.25"
+    assert client.get("/api/v1/dashboard").json()["fx"]["rate"]=="85.25"
+    assert client.get("/api/v1/quotes").json()["fx"]["rate"]=="85.25"
+    assert client.patch("/api/v1/settings",headers=headers,json={"manual_ton_rub":None}).status_code==400
+    profile={"name":"TON fee","configured":True,"fees":[{"name":"Transfer","type":"ton","value":"0.25"}]}
+    assert client.put("/api/v1/fee-profiles/default",headers=headers,json=profile).status_code==200
+    assert client.patch("/api/v1/settings",headers=headers,json={"ton_rate_mode":"auto"}).status_code==200
+
+
+def test_planned_premium_binding_persists_without_affecting_actual_premium(db,client):
+    headers=authenticate(client)
+    db.put("lot","l",{"premium":False})
+    db.put("pair","p",{"collection":"Gift","model":"Model"})
+    payload={"pair_id":"p","premium_planned":True}
+    assert client.patch("/api/v1/lots/l/binding",headers=headers,json=payload).status_code==200
+    assert db.get("lot","l")["premium_planned"] is True
+    assert db.get("lot","l")["premium"] is False
+    assert client.patch("/api/v1/lots/l/binding",headers=headers,json={"pair_id":"p"}).status_code==200
+    assert db.get("lot","l")["premium_planned"] is True
+    payload["premium_planned"]=False
+    assert client.patch("/api/v1/lots/l/binding",headers=headers,json=payload).status_code==200
+    assert db.get("lot","l")["premium_planned"] is False
+
+
+def test_premium_can_be_changed_from_calculation_without_replacing_binding(db,client):
+    headers=authenticate(client)
+    db.put("lot","l",{"pair_id":"p","premium":False,"fee_profile_id":"custom","strategy":{"profit_value":20}})
+    db.put("estimate","l",{"status":"READY","sale_price":100})
+    r=client.patch("/api/v1/pricing/l/premium",headers=headers,json={"premium_planned":True})
+    assert r.status_code==200 and r.json()["premium_planned"] is True
+    assert r.json()["fee_profile_id"]=="custom" and r.json()["strategy"]=={"profit_value":20}
+    assert r.json()["pair_id"]=="p" and r.json()["premium"] is False
+    assert db.get("estimate","l")["status"]=="PENDING"
+    assert db.list("operation")==[] and db.list("ledger")==[]
+    assert client.patch("/api/v1/pricing/missing/premium",headers=headers,json={"premium_planned":True}).status_code==404
+    db.put("lot","ordinary",{"delivery_mode":"manual"})
+    assert client.patch("/api/v1/pricing/ordinary/premium",headers=headers,json={"premium_planned":True}).status_code==400
+
+
+def test_order_card_uses_actual_expenses_after_completion_and_snapshot_before(db,client):
+    authenticate(client)
+    db.put("order","done",{"stage":"COMPLETE","snapshot":{"actual_profit_rub":"50"}})
+    db.put("order","waiting",{"stage":"CHECK_PRICE","snapshot":{"actual_profit_rub":"-2"}})
+    for kind,amount in [("revenue",200),("purchase",130),("transfer",25),("fees",20),("promotion",13)]:
+        db.put("ledger",kind,{"order_id":"done","type":kind,"amount_rub":str(amount)})
+    items={o["id"]:o for o in client.get("/api/v1/orders").json()["items"]}
+    assert items["done"]["profit_rub"]=="12" and items["done"]["profit_actual"] is True
+    assert items["waiting"]["profit_rub"]=="-2" and items["waiting"]["profit_actual"] is False
+
+
 def test_order_retry_only_queues_regular_checks_and_deduplicates(db,client):
     headers=authenticate(client)
     db.put("lot","l",{"pair_id":"p","delivery_mode":"telegram_nft"})
@@ -28,7 +85,7 @@ def test_order_retry_only_queues_regular_checks_and_deduplicates(db,client):
     b=client.post("/api/v1/orders/o/process",headers=headers)
     assert a.status_code==200 and a.json()["task_id"]==b.json()["task_id"]
     assert db.get("order","o")["stage"]=="AWAITING_ENABLE"
-    assert db.get("order","o")["allow_low_profit"] is True
+    assert db.get("order","o")["allow_low_profit"] is False
     assert db.list("operation")==[] and db.list("ledger")==[]
 
 

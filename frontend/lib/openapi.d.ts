@@ -842,6 +842,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pricing/{id}/premium": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Calculation Premium */
+        patch: operations["calculation_premium_api_v1_pricing__id__premium_patch"];
+        trace?: never;
+    };
     "/api/v1/pricing/{id}/preview": {
         parameters: {
             query?: never;
@@ -1208,6 +1225,8 @@ export interface components {
     schemas: {
         /** Binding */
         Binding: {
+            /** Premium Planned */
+            premium_planned?: boolean | null;
             /** Pair Id */
             pair_id?: string | null;
             /**
@@ -1378,7 +1397,7 @@ export interface components {
              * Type
              * @enum {string}
              */
-            type: "fixed" | "percent";
+            type: "fixed" | "percent" | "ton";
             /** Value */
             value: number | string;
             /**
@@ -1511,6 +1530,11 @@ export interface components {
              */
             page_state: string;
         };
+        /** PremiumCalculation */
+        PremiumCalculation: {
+            /** Premium Planned */
+            premium_planned: boolean;
+        };
         /** PromotionSchedule */
         PromotionSchedule: {
             /**
@@ -1565,6 +1589,10 @@ export interface components {
             delivery_tested?: boolean | null;
             /** Stars Rub */
             stars_rub?: number | string | null;
+            /** Ton Rate Mode */
+            ton_rate_mode?: ("auto" | "manual") | null;
+            /** Manual Ton Rub */
+            manual_ton_rub?: number | string | null;
             /** Transfer Stars Reserve */
             transfer_stars_reserve?: number | null;
             /** Purchase Limit Rub */
@@ -3228,6 +3256,43 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["Strategy"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    calculation_premium_api_v1_pricing__id__premium_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PremiumCalculation"];
             };
         };
         responses: {

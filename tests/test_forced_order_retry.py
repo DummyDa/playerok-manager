@@ -29,32 +29,51 @@ def flow(db,monkeypatch):
 
 
 @pytest.mark.parametrize("forced",[False,True])
-def test_only_explicit_order_override_skips_profit_gate(db,flow,forced):
+@pytest.mark.parametrize("profit",["-0.01","0","2"])
+def test_paid_order_ignores_target_profit_but_never_allows_loss(db,flow,forced,profit):
     svc,_,_=flow
     db.put("order","o",{"allow_low_profit":forced})
-    if not forced:
-        with pytest.raises(ManualRequired,match="прибыль"):svc.process_order("o")
+    svc.estimate.return_value["actual_profit_rub"]=profit
+    if profit.startswith("-"):
+        with pytest.raises(ManualRequired,match="убыточен"):svc.process_order("o")
         assert db.get("operation","o:buy") is None
     else:
         svc.process_order("o")
         op=db.get("operation","o:buy")
-        assert op["state"]=="QUEUED" and op["expected"]["profit_overridden"] is True
-        assert op["expected"]["actual_profit_rub"]=="-45"
+        assert op["state"]=="QUEUED" and op["expected"]["actual_profit_rub"]==profit
     assert db.list("ledger")==[]
 
 
 @pytest.mark.parametrize("forced",[False,True])
-def test_profit_override_also_applies_at_purchase_preflight(db,flow,forced):
+@pytest.mark.parametrize("profit",["-0.01","0","2"])
+def test_purchase_preflight_never_overrides_loss(db,flow,forced,profit):
     svc,_,gift=flow
     db.put("order","o",{"allow_low_profit":forced,"stage":"PURCHASING"})
+    svc.estimate.return_value["actual_profit_rub"]=profit
     op={"order_id":"o","action":"order.buy","payload":{"gift":gift}}
-    if forced:svc.order_preflight(op)
-    else:
-        with pytest.raises(ManualRequired,match="Прибыль"):svc.order_preflight(op)
+    if profit.startswith("-"):
+        with pytest.raises(ManualRequired,match="убыточен"):svc.order_preflight(op)
+    else:svc.order_preflight(op)
+
+
+def test_changed_offer_and_cost_use_fresh_nonnegative_profit_snapshot(db,flow):
+    svc,fresh,gift=flow
+    svc.estimate.return_value["actual_profit_rub"]="2"
+    db.put("order","o",{"stage":"PURCHASING"})
+    svc.estimate.return_value["actual_profit_rub"]="2"
+    changed={**gift,"id":"another-gift","name":"Gift-6","salePrice":1200000000}
+    svc.quote.return_value={"gift":changed}
+    op={"id":"o:buy","order_id":"o","action":"order.buy","payload":{"gift":gift},"expected":{"purchase_rub":"90"}}
+    svc.order_preflight(op)
+    assert op["payload"]["gift"]==changed and op["expected"]["purchase_rub"]=="100"
+    assert db.get("order","o")["snapshot"]["actual_profit_rub"]=="2"
+    assert db.get("operation","o:buy")["payload"]["slug"]=="Gift-6"
+    assert db.list("ledger")==[]
 
 
 def test_forced_order_still_checks_expense_limits_and_payment(db,flow):
     svc,fresh,gift=flow
+    svc.estimate.return_value["actual_profit_rub"]="2"
     db.put("order","o",{"allow_low_profit":True,"stage":"PURCHASING"})
     op={"order_id":"o","action":"order.buy","payload":{"gift":gift}}
     db.configure(purchase_limit_rub="50")
@@ -70,6 +89,7 @@ def test_forced_order_still_checks_expense_limits_and_payment(db,flow):
 ])
 def test_zero_purchase_limits_are_unlimited_but_positive_limits_apply(db,flow,monkeypatch,per_order,daily,spent,allowed):
     svc,_,gift=flow
+    svc.estimate.return_value["actual_profit_rub"]="2"
     db.configure(purchase_limit_rub=per_order,daily_purchase_limit_rub=daily)
     db.put("order","o",{"allow_low_profit":True,"stage":"PURCHASING"})
     monkeypatch.setattr(svc,"daily_spent",lambda *_:spent)

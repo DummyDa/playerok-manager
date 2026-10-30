@@ -19,7 +19,7 @@ from .auth import session,create_session,password_hash,password_valid
 from .operations import new_operation,submit,order_retry_reason
 from .order_dates import newest_orders
 from .safety import WriteBlocked,gate,is_nft_lot
-from .pricing import D
+from .pricing import D,effective_fx
 
 def old_running():
     import requests
@@ -157,13 +157,17 @@ def create_app(db:Database|None=None):
             from .browser_delivery import ACTIVE
             if any(j["state"] in ACTIVE for j in db.list("browser_job")):raise ValueError("Сначала завершите текущую передачу через Chrome")
             data["delivery_tested"]=False
-        if any(v is None for k,v in data.items() if k!="stars_rub"):raise ValueError("Пустое значение настройки")
+        if any(v is None for k,v in data.items() if k not in ("stars_rub","manual_ton_rub")):raise ValueError("Пустое значение настройки")
+        merged={**db.settings(),**data}
+        if merged.get("ton_rate_mode")=="manual" and (merged.get("manual_ton_rub") is None or D(merged["manual_ton_rub"])<=0):
+            raise ValueError("Задайте положительный ручной курс TON")
         if data.get("notifications_enabled") and old_running():raise ValueError("Старый Playerok Manager запущен на порту 8000. Сначала остановите его, чтобы не запускать двух ботов.")
         if data.get("notifications_enabled") and (not db.config.get("TELEGRAM_BOT_TOKEN") or not (db.settings().get("owner_chat_id") or db.config.get("OWNER_TELEGRAM_USERNAME"))):raise ValueError("Сначала сохраните токен бота и username или Telegram ID владельца")
         if any(data.get(k) for k in ("repricing_enabled","purchases_enabled","transfers_enabled","promotions_enabled")) and old_running():raise ValueError("Перед включением автоматизации остановите старый проект: два исполнителя могут обработать один заказ.")
         if data.get("delivery_tested") and not db.settings()["delivery_tested"]:
             db.log("delivery_attestation","Владелец подтвердил отдельную проверку выдачи","Это подтверждение владельца, а не результат автоматического теста")
         db.configure(**data)
+        if "ton_rate_mode" in data or "manual_ton_rub" in data:db.enqueue("reprice_preview",key="reprice_preview")
         if "quote_interval" in data:db.put("clock","quotes",{"next":time.time()})
         if "competitor_interval" in data:db.put("clock","competitors",{"next":time.time()})
         db.log("settings","Настройки обновлены",", ".join(data))
@@ -202,7 +206,7 @@ def create_app(db:Database|None=None):
             "orders":len(orders),"problem_orders":sum(o.get("stage")=="MANUAL" for o in orders),"completed_orders":sum(o.get("stage")=="COMPLETE" for o in orders),
             "new_orders":sum(o.get("stage") in {"DISCOVERED","AWAITING_ENABLE","WAITING_DATA"} for o in orders),
             "executing_orders":sum(o.get("stage") in {"CHECK_PRICE","PURCHASING","PURCHASED","WITHDRAWN","TRANSFERRED"} for o in orders),
-            "revenue_rub":str(revenue),"expenses_rub":str(expenses),"profit_rub":str(revenue-expenses),"connections":connections(),"fx":db.get("fx","ton-rub"),
+            "revenue_rub":str(revenue),"expenses_rub":str(expenses),"profit_rub":str(revenue-expenses),"connections":connections(),"fx":effective_fx(db),
             "settings":settings(),"events":db.list("event",10),"quote_count":len(db.list("quote"))}
 
     @app.get("/api/v1/lots")
@@ -282,7 +286,7 @@ def create_app(db:Database|None=None):
     def fetch_models(payload:schemas.ModelsInput)->dict:return {"task_id":db.enqueue("models",{"collection":payload.collection},key="models:"+payload.collection)}
 
     @app.get("/api/v1/quotes")
-    def quotes()->dict:return {"items":db.list("quote"),"history":db.list("quote_history",300),"fx":db.get("fx","ton-rub")}
+    def quotes()->dict:return {"items":db.list("quote"),"history":db.list("quote_history",300),"fx":effective_fx(db)}
 
     @app.post("/api/v1/quotes/refresh")
     def refresh_quote(payload:schemas.QuoteInput)->dict:
@@ -303,13 +307,22 @@ def create_app(db:Database|None=None):
     def strategy(payload:schemas.Strategy)->dict:
         row=db.put("strategy","default",payload.model_dump(mode="json"),False);db.enqueue("reprice");return row
 
+    @app.patch("/api/v1/pricing/{id}/premium")
+    def calculation_premium(id:str,payload:schemas.PremiumCalculation)->dict:
+        lot=db.get("lot",id)
+        if not lot:raise HTTPException(404,"Лот не найден")
+        if not is_nft_lot(lot):raise ValueError("Расчёт премиума доступен для Telegram NFT с привязанной моделью")
+        result=db.put("lot",id,payload.model_dump())
+        db.put("estimate",id,{"status":"PENDING"},merge=False)
+        return result
+
     @app.post("/api/v1/pricing/{id}/preview")
     def preview_price(id:str)->dict:
         # Configuration failures remain immediate; external tariff reads belong to the worker.
         from .service import Service
-        from .pricing import PremiumQuoteRequired
+        from .pricing import PremiumQuoteRequired,FxQuoteRequired
         try:return Service(db).preview_price(id,allow_network=False)
-        except PremiumQuoteRequired:return {"task_id":db.enqueue("preview_price",{"lot_id":id},key="preview_price:"+id)}
+        except (PremiumQuoteRequired,FxQuoteRequired):return {"task_id":db.enqueue("preview_price",{"lot_id":id},key="preview_price:"+id)}
 
     @app.get("/api/v1/competitors")
     def competitors()->dict:return {"items":db.list("competitor")}
@@ -419,12 +432,20 @@ def create_app(db:Database|None=None):
         operations=[o for o in db.list("operation",100000) if o.get("order_id")]
         by_order={}
         for operation in operations:by_order.setdefault(operation["order_id"],[]).append(operation)
-        spent={e.get("order_id") for e in db.list("ledger",100000)}
+        ledger=db.list("ledger",100000)
+        spent={e.get("order_id") for e in ledger}
+        actual_profits={}
+        revenue_orders={e.get("order_id") for e in ledger if e.get("type")=="revenue"}
+        for entry in ledger:
+            oid=entry.get("order_id")
+            if oid in revenue_orders:
+                actual_profits[oid]=actual_profits.get(oid,D(0))+(D(entry["amount_rub"]) if entry.get("type")=="revenue" else -D(entry["amount_rub"]))
         items=[]
         for order in newest_orders(db.list("order",100000))[:1000]:
             reason=order_retry_reason(order,by_order.get(order["id"],[]),order["id"] in spent)
             if not is_nft_lot(db.get("lot",order.get("lot_id"))):reason="Автовыдача доступна только для привязанного Telegram NFT"
-            items.append({**order,"retry_allowed":reason is None,"retry_reason":reason})
+            profit=actual_profits.get(order["id"]) if order["id"] in revenue_orders else (order.get("snapshot") or {}).get("actual_profit_rub")
+            items.append({**order,"retry_allowed":reason is None,"retry_reason":reason,"profit_rub":str(profit) if profit is not None else None,"profit_actual":order["id"] in revenue_orders})
         return {"items":items,"operations":[{k:v for k,v in o.items() if k!="payload"} for o in operations[:300]]}
 
     @app.post("/api/v1/orders/sync")
@@ -453,8 +474,8 @@ def create_app(db:Database|None=None):
                 db.put("operation",op["id"],{"state":"RETRY_PENDING","previous_preflight_error":op.get("error"),"error":None})
         if order.get("stage")=="MANUAL" or order.get("manual_hold"):
             db.put("order",id,{"stage":"DISCOVERED","manual_hold":False,"reason":"Повторная проверка запрошена владельцем"})
-        db.put("order",id,{"allow_low_profit":True,"profit_override_at":time.time()})
-        db.log("order_retry","Владелец запустил заказ без ограничения целевой прибыли",id,order_id=id)
+        db.put("order",id,{"allow_low_profit":False})
+        db.log("order_retry","Владелец повторил проверку заказа; убыточная закупка запрещена",id,order_id=id)
         return {"task_id":db.enqueue("process_order",{"order_id":id},key="order:"+id)}
 
     @app.get("/api/v1/finance")

@@ -9,6 +9,221 @@ const connections = { items: [{ id: "playerok", configured: true, status: "CONNE
 const preview = { id: "preview", state: "PREVIEW", action: "promotion", payload: { lot_id: lotId }, expected: { cost_rub: "25", balance: 100 } };
 const events = [{ id: "one", title: "Лоты синхронизированы", detail: "46 объявлений обновлены", action: "sync", level: "INFO", updated_at: Date.now() / 1000 }];
 
+for(const scheme of ["dark","light"] as const) test(`lot tabs and search match ${scheme} theme`, async ({ page }) => {
+  await mock(page);
+  await page.emulateMedia({colorScheme:scheme});
+  await page.goto("/lots");
+  const search=page.getByPlaceholder("Название, коллекция или модель",{exact:true});
+  if(scheme==="dark"){
+    await expect(page.locator(".tabs")).toHaveCSS("background-color","rgb(38, 41, 48)");
+    await expect(page.getByRole("button",{name:"Активные",exact:true})).toHaveCSS("background-color","rgb(35, 71, 134)");
+    await expect(page.locator(".search-box")).toHaveCSS("background-color","rgb(20, 21, 25)");
+    await expect(search).toHaveCSS("background-color","rgba(0, 0, 0, 0)");
+    await expect(page.getByRole("button",{name:`Рассчитать цену ${lot.title}`,exact:true})).toHaveCSS("background-color","rgb(38, 41, 48)");
+  }else{
+    await expect(page.locator(".search-box")).toHaveCSS("background-color","rgb(255, 255, 255)");
+  }
+  await search.focus();
+  await page.screenshot({path:`../data/qa/lots-${scheme}-filters.png`,fullPage:true});
+  await search.fill("nonexistent-gift");
+  await expect(page.getByText("Объявления не найдены",{exact:true})).toBeVisible();
+  await search.fill("");
+  await expect(page.getByRole("row").filter({hasText:lot.title})).toBeVisible();
+});
+
+test("theme toggle persists across pages and styles forms and dialogs", async ({ page }) => {
+  const writes=await mock(page);
+  await page.emulateMedia({colorScheme:"light"});
+  await page.goto("/");
+  await expect(page.locator(".brand-logo img")).toHaveAttribute("src","/playerok-logo.png");
+  await page.getByRole("button",{name:"Включить тёмную тему",exact:true}).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme","dark");
+  expect(await page.evaluate(()=>localStorage.getItem("playerok.theme"))).toBe("dark");
+  await page.getByRole("heading",{name:"Обзор",exact:true}).hover();
+  await expect(page.locator(".theme-toggle")).toHaveCSS("background-color","rgb(28, 30, 35)");
+  await page.screenshot({path:"../data/qa/dark-overview.png",fullPage:true});
+  await page.goto("/gifts");
+  await expect(page.getByRole("cell",{name:"Obsidian",exact:true})).toHaveCSS("color","rgb(238, 240, 245)");
+  await page.screenshot({path:"../data/qa/dark-gifts.png",fullPage:true});
+  await page.goto("/settings");
+  await expect(page.getByRole("button",{name:"Включить светлую тему",exact:true})).toBeVisible();
+  await expect(page.getByLabel("Стоимость одного Star, ₽",{exact:true})).toHaveCSS("background-color","rgb(20, 21, 25)");
+  await page.getByRole("region",{name:"Режим работы",exact:true}).screenshot({path:"../data/qa/dark-work-mode.png"});
+  await page.route(`**/api/v1/pricing/${lotId}/preview`,route=>route.fulfill({json:{
+    id:"dark-price",action:"price",state:"PREVIEW",payload:{lot_id:lotId,price:550},
+    expected:{purchase_rub:412,transfer_rub:31.5,profit_rub:21,promotion_rub:13,fees_rub:72,ton_rub:98}
+  }}));
+  await page.goto("/lots");
+  await page.getByRole("button",{name:`Рассчитать цену ${lot.title}`,exact:true}).click();
+  await expect(page.getByRole("dialog")).toHaveCSS("background-color","rgb(28, 30, 35)");
+  await page.screenshot({path:"../data/qa/dark-calculation.png",fullPage:true});
+  await page.goto("/settings");
+  await page.setViewportSize({width:390,height:844});
+  await page.screenshot({path:"../data/qa/dark-mobile.png",fullPage:false});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.getByRole("button",{name:"Включить светлую тему",exact:true}).click();
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme","light");
+  expect(writes).toHaveLength(0);
+});
+
+test("theme follows system until an explicit theme is saved", async ({ page }) => {
+  await mock(page);
+  await page.emulateMedia({colorScheme:"dark"});
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("data-theme","dark");
+  await page.emulateMedia({colorScheme:"light"});
+  await expect(page.locator("html")).toHaveAttribute("data-theme","light");
+  await page.getByRole("button",{name:"Включить тёмную тему",exact:true}).click();
+  await page.emulateMedia({colorScheme:"dark"});
+  await page.emulateMedia({colorScheme:"light"});
+  await expect(page.locator("html")).toHaveAttribute("data-theme","dark");
+});
+
+test("work mode cards save permissions and adapt to mobile", async ({ page }) => {
+  await mock(page);
+  let current={...settings};
+  const writes:any[]=[];
+  await page.route("**/api/v1/settings",async route=>{
+    if(route.request().method()==="PATCH"){
+      const body=route.request().postDataJSON();writes.push(body);current={...current,...body};
+    }
+    return route.fulfill({json:current});
+  });
+  await page.goto("/settings");
+  const mode=page.getByRole("region",{name:"Режим работы",exact:true});
+  await expect(mode.getByRole("checkbox")).toHaveCount(7);
+  await expect(mode.getByText("Подключения в порядке",{exact:true})).toBeVisible();
+  const auto=mode.getByRole("checkbox",{name:"Автоматическое изменение цен",exact:true});
+  await auto.focus();await page.keyboard.press("Space");
+  await expect(auto).toBeChecked();
+  await expect(mode.getByText("Есть изменения",{exact:true})).toBeVisible();
+  expect(writes).toHaveLength(0);
+  for(const name of ["Платные поднятия","Покупка NFT на MRKT","Передача NFT покупателям","Выдача отдельно протестирована мной"])
+    await mode.getByRole("checkbox",{name,exact:true}).check();
+  await page.getByRole("button",{name:"Сохранить настройки",exact:true}).click();
+  await expect.poll(()=>writes.length).toBe(1);
+  expect(writes[0]).toEqual({repricing_enabled:true,promotions_enabled:true,purchases_enabled:true,transfers_enabled:true,delivery_tested:true});
+  await expect(mode.getByText("Подключения в порядке",{exact:true})).toBeVisible();
+  await mode.screenshot({path:"../data/qa/work-mode-desktop.png"});
+  await page.reload();
+  await expect(auto).toBeChecked();
+  await page.setViewportSize({width:390,height:844});
+  await mode.screenshot({path:"../data/qa/work-mode-mobile.png"});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await expect(mode.getByRole("checkbox",{name:"Аварийная остановка",exact:true})).not.toBeChecked();
+});
+
+test("work mode never reports ready when worker heartbeat is stale", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/connections",route=>route.fulfill({json:{...connections,worker:{status:"IDLE",heartbeat:1}}}));
+  await page.goto("/settings");
+  const mode=page.getByRole("region",{name:"Режим работы",exact:true});
+  await expect(mode.getByText("Требуется проверка",{exact:true})).toBeVisible();
+});
+
+test("completed order card displays actual profit", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/orders",route=>route.fulfill({json:{items:[{
+    id:"completed",title:"Gift",stage:"COMPLETE",sale_rub:"200",profit_rub:"12",
+    profit_actual:true,retry_allowed:false
+  }],operations:[]}}));
+  await page.goto("/orders");
+  await page.getByRole("button",{name:"Подробнее",exact:true}).click();
+  const dialog=page.getByRole("dialog",{name:"Карточка заказа"});
+  await expect(dialog.getByText("Фактическая прибыль",{exact:true})).toBeVisible();
+  await expect(dialog.getByText("12 ₽",{exact:true})).toBeVisible();
+  await expect(dialog.getByText("По учтённым расходам заказа",{exact:true})).toBeVisible();
+});
+
+test("stale TON rate preview shows profit but cannot apply the price", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/settings",route=>route.fulfill({json:{...settings,repricing_enabled:true}}));
+  await page.route(`**/api/v1/pricing/${lotId}/preview`,route=>route.fulfill({json:{
+    id:"stale-fx-preview",action:"price",state:"PREVIEW",payload:{lot_id:lotId,price:1500},
+    expected:{profit_rub:100,purchase_rub:1100,ton_rub:100,fx_stale:true,
+      fx_warning:"Не удалось обновить курс TON. Расчёт выполнен по последнему сохранённому курсу; он устарел."}
+  }}));
+  await page.goto("/lots");
+  await page.getByRole("button",{name:`Рассчитать цену ${lot.title}`,exact:true}).click();
+  const dialog=page.getByRole("dialog");
+  await expect(dialog.getByText("100 ₽",{exact:true})).toHaveCount(2);
+  await expect(dialog.getByText("Курс TON · устарел",{exact:true})).toBeVisible();
+  await expect(dialog.getByText(/Не удалось обновить курс TON/)).toBeVisible();
+  await expect(dialog.getByRole("button",{name:"Подтвердить",exact:true})).toBeDisabled();
+  await page.screenshot({path:"../data/qa/stale-ton-preview.png",fullPage:true});
+});
+
+test("calculation dialog saves premium and refreshes profit immediately", async ({ page }) => {
+  const writes=await mock(page);
+  let planned=false;
+  await page.route(`**/api/v1/pricing/${lotId}/premium`,async route=>{
+    const body=route.request().postDataJSON();planned=body.premium_planned;
+    writes.push({path:`/pricing/${lotId}/premium`,body});
+    return route.fulfill({json:{...lot,premium_planned:planned}});
+  });
+  await page.route(`**/api/v1/pricing/${lotId}/preview`,route=>route.fulfill({json:{
+    id:planned?"with-premium":"without-premium",action:"price",state:"PREVIEW",
+    payload:{lot_id:lotId,price:planned?1513:1500},
+    expected:{premium_planned:planned,premium_included:planned,premium_count:planned?1:0,
+      premium_unit_rub:13,promotion_rub:planned?13:0,profit_rub:planned?87:100,purchase_rub:1100}
+  }}));
+  await page.goto("/lots");
+  await page.locator(".binding-button").click();
+  await expect(page.getByRole("checkbox",{name:/Считать как премиум/})).toHaveCount(0);
+  await page.getByRole("dialog").locator("header").getByRole("button",{name:"Закрыть",exact:true}).click();
+  await page.getByRole("button",{name:`Рассчитать цену ${lot.title}`,exact:true}).click();
+  const dialog=page.getByRole("dialog",{name:"Применить рассчитанную цену"});
+  await dialog.getByRole("checkbox",{name:/Считать как премиум/}).check();
+  await expect(dialog.getByText("87 ₽",{exact:true})).toBeVisible();
+  await expect(dialog.getByText("1 поднят. × 13 ₽",{exact:true})).toBeVisible();
+  await page.screenshot({path:"../data/qa/planned-premium.png",fullPage:true});
+  await dialog.locator("footer").getByRole("button",{name:"Закрыть",exact:true}).click();
+  await page.getByRole("button",{name:`Рассчитать цену ${lot.title}`,exact:true}).click();
+  await expect(dialog.getByRole("checkbox",{name:/Считать как премиум/})).toBeChecked();
+  await dialog.getByRole("checkbox",{name:/Считать как премиум/}).uncheck();
+  await expect(dialog.getByText("100 ₽",{exact:true})).toBeVisible();
+  expect(writes.some(r=>r.path==="/operations/execute")).toBe(false);
+});
+
+test("manual TON exchange rate saves and persists with Stars cost", async ({ page }) => {
+  await mock(page);
+  let current:any={...settings,ton_rate_mode:"auto",manual_ton_rub:null};
+  const writes:any[]=[];
+  await page.route("**/api/v1/settings",async route=>{
+    if(route.request().method()==="PATCH"){
+      const body=route.request().postDataJSON();writes.push(body);current={...current,...body};
+    }
+    return route.fulfill({json:current});
+  });
+  await page.goto("/settings");
+  await expect(page.getByLabel("Свой курс TON, ₽",{exact:true})).toHaveCount(0);
+  await page.getByLabel("Источник курса TON",{exact:true}).selectOption("manual");
+  await page.getByLabel("Свой курс TON, ₽",{exact:true}).fill("85.25");
+  await page.getByLabel("Стоимость одного Star, ₽",{exact:true}).fill("1.26");
+  await page.getByRole("button",{name:"Сохранить настройки",exact:true}).click();
+  await expect.poll(()=>writes).toEqual([{ton_rate_mode:"manual",manual_ton_rub:"85.25",stars_rub:"1.26"}]);
+  await page.reload();
+  await expect(page.getByLabel("Свой курс TON, ₽",{exact:true})).toHaveValue("85.25");
+  await page.screenshot({path:"../data/qa/manual-ton-rate.png",fullPage:true});
+  await page.getByLabel("Источник курса TON",{exact:true}).selectOption("auto");
+  await page.getByRole("button",{name:"Сохранить настройки",exact:true}).click();
+  await expect.poll(()=>writes.length).toBe(2);
+  expect(writes[1]).toEqual({ton_rate_mode:"auto"});
+});
+
+test("commission editor saves fixed TON fee", async ({ page }) => {
+  const writes=await mock(page);
+  await page.goto("/fees");
+  await page.getByRole("button",{name:"Комиссия",exact:true}).click();
+  await page.getByLabel("Тип",{exact:true}).selectOption("ton");
+  await page.getByLabel("Сумма, TON",{exact:true}).fill("0.25");
+  await page.getByRole("button",{name:"Сохранить профиль",exact:true}).click();
+  await expect.poll(()=>writes.filter(r=>r.path==="/fee-profiles/default").length).toBe(1);
+  expect(writes.find(r=>r.path==="/fee-profiles/default")?.body.fees[0]).toMatchObject({type:"ton",value:"0.25"});
+  await page.screenshot({path:"../data/qa/ton-fee.png",fullPage:true});
+});
+
 test("zero expense limits save and are described as unlimited", async ({ page }) => {
   await mock(page);
   let current={...settings,purchase_limit_rub:"10000",daily_purchase_limit_rub:"10000",daily_promotion_limit_rub:"10000"};
@@ -69,7 +284,7 @@ test("order card retries a paused order through the process task", async ({ page
   await page.getByRole("button", { name:"Повторить",exact:true }).click();
   await expect.poll(() => writes).toEqual(["POST"]);
   await expect(page.getByRole("dialog",{name:"Карточка заказа"})).toBeVisible();
-  await expect(page.getByText("Заказ запущен без ограничения целевой прибыли",{exact:true})).toBeVisible();
+  await expect(page.getByText("Заказ отправлен на проверку; убыточная закупка запрещена",{exact:true})).toBeVisible();
 });
 
 test("order retry is disabled when an earlier transfer needs reconciliation", async ({ page }) => {

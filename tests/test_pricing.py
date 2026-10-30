@@ -74,3 +74,32 @@ def test_stepped_premium_and_sale_profit_basis_and_competitor_floor():
 def test_unresolvable_premium_blocks_pricing_instead_of_understating_cost():
     with pytest.raises(PricingError,match="согласовать"):
         calculate_with_premium(100,0,{"configured":True,"fees":[]},{},lambda price:price)
+
+
+def test_ton_fee_and_percentages_precede_purchase_deduction():
+    from backend.app.pricing import net_coefficients
+    fees=[{"type":"percent","value":10,"basis":"sale"},
+          {"type":"ton","value":"0.5"},
+          {"type":"percent","value":5,"basis":"remaining","include_fixed":True}]
+    a,b=net_coefficients(fees,400,100)
+    # 1000 - 10% = 900; minus .5 TON = 850; minus 5% = 807.50.
+    net=a*D(1000)+b
+    assert net==D("807.50")
+    assert net-D(400)-D(25)-D(13)==D("369.50")
+    r=calculate(400,25,{"configured":True,"fees":fees},
+                {"profit_type":"rub","profit_value":20},promotion_rub=13,ton_rub=100)
+    assert D(r["profit_rub"])>=20
+    assert D(r["net_rub"])-400-25-13==D(r["profit_rub"])
+
+
+def test_ton_fee_requires_rate_and_preserves_fixed_fee_basis_choice():
+    from backend.app.pricing import net_coefficients
+    fees=[{"type":"ton","value":"0.25"},{"type":"percent","value":10}]
+    with pytest.raises(PricingError,match="курс TON"):net_coefficients(fees,100)
+    a,b=net_coefficients(fees,100,100)
+    assert a*1000+b==875  # fixed fees excluded from percentage base by default
+    fees[1]["include_fixed"]=True
+    a,b=net_coefficients(fees,100,100)
+    assert a*1000+b==D("877.5")
+    result=calculate_with_premium(100,0,{"configured":True,"fees":fees},{},lambda price:13,ton_rub=100)
+    assert D(result["profit_rub"])>=5
