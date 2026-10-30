@@ -209,6 +209,21 @@ class Mrkt:
             finally: await client.disconnect()
         return asyncio.run(run())
 
+    def rate_limited(self, response):
+        throttle=self.db.get("throttle","mrkt") or {}
+        import math
+        from email.utils import parsedate_to_datetime
+        header=response.headers.get("Retry-After","60")
+        try:retry=float(header)
+        except (ValueError,TypeError):
+            try:retry=parsedate_to_datetime(header).timestamp()-time.time()
+            except (ValueError,TypeError,OverflowError):retry=60
+        if not math.isfinite(retry):retry=60
+        strikes=int(throttle.get("rate_limits",0))+1
+        retry=max(1,retry,min(3600,60*2**min(strikes-1,6)))
+        self.db.put("throttle","mrkt",{"next":time.time()+retry,"rate_limits":strikes})
+        raise IntegrationError("MRKT ограничил частоту запросов")
+
     def authenticate(self):
         async def auth(client):
             peer = await client.get_input_entity("mrkt")
@@ -216,30 +231,28 @@ class Mrkt:
             return parse_qs(urlsplit(web.url).fragment or urlsplit(web.url).query).get("tgWebAppData", [None])[0] or unquote(web.url.split("tgWebAppData=",1)[1].split("&",1)[0])
         init_data = self.telegram(auth)
         response = self.http.post(self.config.get("MRKT_API_URL", "https://api.tgmrkt.io/api/v1")+"/auth",json={"data":init_data},headers=self.headers,timeout=20)
+        if response.status_code == 429:self.rate_limited(response)
         if response.status_code != 200: raise IntegrationError(f"MRKT авторизация: HTTP {response.status_code}")
         self.token = response.json().get("token")
         if not self.token: raise IntegrationError("MRKT не вернул токен")
 
     def request(self, method, path, payload=None, write=False):
         if write: gate(self.db, "purchases")
-        if not self.token: self.authenticate()
         throttle = self.db.get("throttle", "mrkt") or {}
         delay = throttle.get("next",0)-time.time()
         if delay > 2: raise IntegrationError(f"MRKT: пауза по ограничению запросов ещё {delay:.0f} секунд")
         if delay > 0: time.sleep(delay)
-        self.db.put("throttle","mrkt",{"next":time.time()+0.5})
+        if not self.token: self.authenticate()
+        self.db.put("throttle","mrkt",{"next":time.time()+1.5})
         if write:gate(self.db,"purchases")
         response = self.http.request(method,self.config.get("MRKT_API_URL","https://api.tgmrkt.io/api/v1")+path,
             headers={**self.headers,"Authorization":self.token},json=payload,timeout=20)
         if response.status_code == 401:
             self.token = None
             raise IntegrationError("MRKT: сессия истекла, запрос будет повторён после авторизации")
-        if response.status_code == 429:
-            try: retry = max(1,min(float(response.headers.get("Retry-After",60)),3600))
-            except ValueError: retry = 60
-            self.db.put("throttle","mrkt",{"next":time.time()+retry})
-            raise IntegrationError("MRKT ограничил частоту запросов")
+        if response.status_code == 429:self.rate_limited(response)
         if response.status_code >= 400: raise IntegrationError(f"MRKT: HTTP {response.status_code}")
+        if throttle.get("rate_limits"):self.db.put("throttle","mrkt",{"rate_limits":0})
         return response.json()
 
     def search(self, collection, model):

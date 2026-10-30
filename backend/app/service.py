@@ -27,8 +27,10 @@ class Service:
         if last and time.time()-last["updated_at"]<300 and last.get("detail")==detail: return
         self.db.put("notice",action,{"detail":self.db.redact(detail)})
         self.db.log(action,title,detail,**refs)
-        if self.db.settings()["notifications_enabled"]:
-            self.db.put("notification",uid(),{"title":title,"detail":self.db.redact(detail),"state":"PENDING"})
+    def owner_notice(self, order_id, event):
+        from .owner_notifications import queue
+        try:queue(self.db,self.db.get("order",order_id),event)
+        except Exception as exc:self.db.log("owner_notice_error","Не удалось подготовить уведомление",self.db.redact(exc),"ERROR")
 
     def connection(self, name, operation):
         self.db.put("connection",name,{"status":"CHECKING","last_error":None})
@@ -117,25 +119,47 @@ class Service:
                 and time.time()-old.get("fetched_at",0)<self.db.settings()["quote_interval"]): return old
         gifts=self.mrkt.search(pair["collection"],pair["model"])
         if not gifts:
-            self.db.put("quote",pair_id,{"available":False,"fetched_at":time.time(),"reason":"Нет предложений точной модели, доступных для немедленной передачи"})
+            self.db.put("quote",pair_id,{"available":False,"fetched_at":time.time(),"last_error":None,"failures":0,"next_check_at":time.time()+self.db.settings()["quote_interval"],"reason":"Нет предложений точной модели, доступных для немедленной передачи"})
             self.notice("no-model:"+pair_id,"Нет доступных подарков нужной модели",pair["collection"]+" — "+pair["model"])
             return None
         gift=gifts[0]
-        result={"available":True,"fetched_at":time.time(),"ton":self.mrkt.ton(gift["salePrice"]),"gift":gift,"offers_in_page":len(gifts)}
+        result={"available":True,"fetched_at":time.time(),"ton":self.mrkt.ton(gift["salePrice"]),"gift":gift,"offers_in_page":len(gifts),"last_error":None,"failures":0,"next_check_at":time.time()+self.db.settings()["quote_interval"]}
         self.db.put("quote",pair_id,result)
         self.db.put("quote_history",uid(),{"pair_id":pair_id,**result})
         if old and old.get("ton")!=result["ton"]: self.notice("quote:"+pair_id,"Изменилась закупочная цена",pair["collection"]+" — "+pair["model"]+": "+result["ton"]+" TON")
         return result
 
     def quotes(self):
-        active={l.get("pair_id") for l in self.db.list("lot") if is_nft_lot(l) and l.get("status")=="APPROVED" and not l.get("missing")}
-        for pair_id in active:
-            if pair_id:
-                try: self.quote(pair_id)
-                except Exception as exc:
-                    self.db.put("quote",pair_id,{"last_error":self.db.redact(exc)})
-                    self.notice("quote-error:"+pair_id,"Ошибка получения цены MRKT",self.db.redact(exc))
-        self.db.enqueue("reprice")
+        now=time.time();interval=self.db.settings()["quote_interval"]
+        quotes={q["id"]:q for q in self.db.list("quote",100000)}
+        pairs=[p for p in self.db.list("pair",100000) if p.get("enabled",True)]
+        pairs.sort(key=lambda p:(quotes.get(p["id"],{}).get("fetched_at",0),p["id"]))
+        due=max(now,(self.db.get("throttle","mrkt") or {}).get("next",0))
+        count=0
+        for pair in pairs:
+            saved=quotes.get(pair["id"],{})
+            # An interval change applies immediately, while failed requests retain their backoff.
+            next_check=saved.get("next_check_at",0) if saved.get("last_error") else saved.get("fetched_at",0)+interval
+            if next_check>now:continue
+            self.db.enqueue("quote",{"pair_id":pair["id"],"scheduled":True},key="quote:"+pair["id"],due=due)
+            due+=3;count+=1
+        return {"queued":count,"interval":interval}
+
+    def refresh_quote(self, pair_id, scheduled=False):
+        pair=self.db.get("pair",pair_id)
+        if scheduled and (not pair or not pair.get("enabled",True)):return {"skipped":True}
+        self.db.put("quote",pair_id,{"last_attempt_at":time.time()})
+        try:
+            result=self.quote(pair_id,True)
+        except Exception as exc:
+            previous=self.db.get("quote",pair_id) or {}
+            failures=int(previous.get("failures",0))+1
+            retry_at=max(time.time()+min(900,60*2**min(failures-1,4)),(self.db.get("throttle","mrkt") or {}).get("next",0))
+            self.db.put("quote",pair_id,{"last_error":self.db.redact(exc),"failures":failures,"next_check_at":retry_at})
+            self.notice("quote-error:"+pair_id,"Ошибка получения цены MRKT",self.db.redact(exc))
+            raise
+        self.db.enqueue("reprice",key="reprice")
+        return result or {"available":False}
 
     def competitor(self, id):
         record=self.db.get("competitor",id)
@@ -441,6 +465,7 @@ class Service:
             self.db.put("order",id,{"stage":"PURCHASING","snapshot":estimate,"gift_slug":slug})
             return op
         elif stage=="PURCHASED":
+            self.owner_notice(id,"purchased")
             self.make_order_operation(id,"withdraw",{"gift_id":order["mrkt_gift_id"],"slug":order["gift_slug"]},{})
         elif stage=="WITHDRAWN":
             saved=self.mrkt.saved(order["gift_slug"])
@@ -546,6 +571,7 @@ class Service:
             bought=self.mrkt.buy(p["gift"])
             self.db.put("order",order["id"],{"stage":"PURCHASED","mrkt_gift_id":str(bought["id"])})
             self.ledger(op["id"],"purchase",op["expected"]["purchase_rub"],order["lot_id"],order["id"],snapshot=op["expected"])
+            self.owner_notice(order["id"],"purchased")
             return {"gift_id":str(bought["id"])}
         if action=="order.withdraw":
             self.mrkt.withdraw(p["gift_id"])
@@ -565,6 +591,7 @@ class Service:
             self.db.put("processed",order["id"],{"source":"playerok2"})
             self.ledger(op["id"],"revenue",order["sale_rub"],order["lot_id"],order["id"])
             self.ledger(op["id"],"fees",D(order["sale_rub"])-D(order["snapshot"]["actual_net_rub"]),order["lot_id"],order["id"])
+            self.owner_notice(order["id"],"delivered")
             return {"sent":True}
         raise ValueError("Неизвестный этап выдачи")
 
@@ -587,6 +614,7 @@ class Service:
                     "mrkt_gift_id":str(owned["id"]),"reason":"Покупка подтверждена по инвентарю MRKT"})
                 self.db.put("operation",op_id,{"state":"COMPLETE","reconciled":True,"verification":"mrkt_inventory",
                     "result":{"gift_id":str(owned["id"])},"error":None})
+                self.owner_notice(order["id"],"purchased")
                 if not stopped:self.db.enqueue("process_order",{"order_id":order["id"]},key="order:"+order["id"])
                 return
         if op["action"]=="order.transfer":
@@ -645,12 +673,8 @@ class Service:
                 s=self.db.settings()
                 bot.request("sendMessage",{"chat_id":chat["id"],"text":f"Аварийная остановка: {'да' if s['emergency_stop'] else 'нет'}. Подробности — в панели."})
             self.db.configure(bot_offset=update["update_id"]+1)
-        pending=[n for n in self.db.list("notification",1000) if n.get("state")=="PENDING"]
-        if pending and self.db.settings().get("owner_chat_id"):
-            batch=pending[:15]
-            text="\n\n".join(n["title"]+"\n"+n.get("detail","")[:180] for n in batch)[:3900]
-            bot.request("sendMessage",{"chat_id":self.db.settings()["owner_chat_id"],"text":text})
-            for n in batch:self.db.put("notification",n["id"],{"state":"SENT"})
+        from .owner_notifications import send_pending
+        send_pending(self.db,bot)
 
     def backup(self):
         folder=self.db.config.data/"backups";folder.mkdir(exist_ok=True)

@@ -27,7 +27,11 @@ def test_pairs_are_queried_once_for_multiple_lots(db,monkeypatch):
     prepare(db)
     for i in range(10):db.put("lot",str(i),{"status":"APPROVED","pair_id":"p"})
     svc=Service(db);quote=Mock();monkeypatch.setattr(svc,"quote",quote)
-    svc.quotes();quote.assert_called_once_with("p")
+    db.put("quote","p",{"fetched_at":0})
+    svc.quotes();quote.assert_not_called()
+    with db.sessions() as session:
+        tasks=list(session.scalars(select(Task).where(Task.kind=="quote")))
+    assert len(tasks)==1 and tasks[0].payload["pair_id"]=="p"
 
 def test_missing_model_does_not_pause_listing(db,monkeypatch):
     prepare(db);svc=Service(db);monkeypatch.setattr(svc.mrkt,"search",lambda *_:[])
