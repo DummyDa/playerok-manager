@@ -417,6 +417,27 @@ test("saving trading settings does not revert the separately saved transport or 
   await expect(page.getByRole("checkbox", { name: /^Выдача отдельно протестирована мной/ })).not.toBeChecked();
 });
 
+test("update confirmation refreshes a cached version before showing the target", async ({ page }) => {
+  await mock(page);
+  let latest="b".repeat(40),checks=0,installs=0;
+  await page.route("**/api/v1/updates**",async route=>{
+    const path=new URL(route.request().url()).pathname;
+    if(path.endsWith("/check")){
+      checks++;latest="c".repeat(40);
+      return route.fulfill({json:{task_id:"task"}});
+    }
+    if(path.endsWith("/install"))installs++;
+    return route.fulfill({json:{available:true,dismissed:false,current_commit:"a".repeat(40),latest_commit:latest,
+      message:latest==="b".repeat(40)?"Old cached update":"Newest update",install_supported:true,progress:{state:"IDLE"}}});
+  });
+  await page.goto("/");
+  await page.getByRole("button",{name:"Посмотреть обновление",exact:true}).click();
+  const dialog=page.getByRole("dialog",{name:"Установить обновление?"});
+  await expect(dialog.getByText("Newest update",{exact:true})).toBeVisible();
+  await expect(dialog.getByText("ccccccc",{exact:true})).toBeVisible();
+  expect(checks).toBe(1);expect(installs).toBe(0);
+});
+
 test("update banner can be postponed and install requires a separate confirmation", async ({ page }) => {
   await mock(page);
   const writes: string[] = [];
@@ -424,6 +445,7 @@ test("update banner can be postponed and install requires a separate confirmatio
   await page.route("**/api/v1/updates**", async route => {
     const path = new URL(route.request().url()).pathname;
     if (route.request().method() !== "GET") writes.push(path);
+    if (path.endsWith("/check")) return route.fulfill({json:{task_id:"task"}});
     if (path.endsWith("/dismiss")) dismissed = true;
     await route.fulfill({ json: { available: true, dismissed, current_commit: "a".repeat(40), latest_commit: "b".repeat(40), message: "Удобные обновления", commit_url: "https://github.com/DummyDa/playerok-manager/commit/" + "b".repeat(40), install_supported: true, progress: { state: "IDLE" } } });
   });
@@ -468,6 +490,7 @@ test("installation reconnects after repeated server outages and opens the ready 
   let stage = "IDLE", offline = false, failures = 0, loads = 0, installs = 0;
   page.on("load", () => loads++);
   await page.route("**/api/v1/updates**", async route => {
+    if (new URL(route.request().url()).pathname.endsWith("/check")) return route.fulfill({json:{task_id:"task"}});
     if (route.request().method() === "POST") { installs++; stage = "STOPPING"; return route.fulfill({ json: { started: true } }); }
     if (offline) { failures++; return route.fulfill({ status: 503, contentType: "text/plain", body: "Services restarting" }); }
     return route.fulfill({ json: { available: stage !== "COMPLETE", install_supported: true, current_commit: stage === "COMPLETE" ? target : "a".repeat(40), latest_commit: target, progress: { state: stage, target, installed_commit: stage === "COMPLETE" ? target : undefined, updated_at: Date.now() / 1000, message: "Завершаем работу служб" } } });

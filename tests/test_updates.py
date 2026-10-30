@@ -24,6 +24,7 @@ def response(sha=LATEST):
 
 def local(monkeypatch):
     monkeypatch.setattr(updates,"installation",lambda root:{"current_commit":CURRENT,"install_supported":True,"install_reason":None})
+    monkeypatch.setattr(updates,"cached_is_older",lambda *args:False)
 
 def test_get_updates_is_cached_and_never_calls_github(db,client,monkeypatch):
     local(monkeypatch)
@@ -62,6 +63,30 @@ def test_check_failure_retains_last_version_and_hides_external_error(db):
     result=updates.check(db,http)
     assert result["latest_commit"]==LATEST
     assert "secret-proxy-password" not in str(result)
+
+
+def test_cached_ancestor_never_appears_as_upgrade_or_installs(db,client,monkeypatch):
+    local(monkeypatch)
+    monkeypatch.setattr(updates,"cached_is_older",lambda *args:True)
+    db.put("update","latest",{"latest_commit":LATEST,"checked_at":time.time()})
+    state=client.get("/api/v1/updates").json()
+    assert state["stale_catalog"] and not state["available"]
+    assert client.post("/api/v1/updates/install",json={"commit":LATEST}).status_code==400
+    assert not db.settings()["emergency_stop"]
+
+
+def test_cached_ancestor_detected_from_local_git_without_fetch(tmp_path):
+    import subprocess
+    def command(*args):
+        return subprocess.check_output(["git","-C",str(tmp_path),*args],text=True).strip()
+    command("init")
+    command("-c","user.name=Test","-c","user.email=test@example.com","commit","--allow-empty","-m","first")
+    old=command("rev-parse","HEAD")
+    command("-c","user.name=Test","-c","user.email=test@example.com","commit","--allow-empty","-m","second")
+    new=command("rev-parse","HEAD")
+    assert updates.cached_is_older(tmp_path,old,new)
+    assert not updates.cached_is_older(tmp_path,new,old)
+    assert not updates.cached_is_older(tmp_path,new,new)
 
 def test_install_requires_exact_fresh_commit_clean_sources_and_csrf(db,client,monkeypatch):
     local(monkeypatch)

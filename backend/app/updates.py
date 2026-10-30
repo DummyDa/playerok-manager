@@ -44,19 +44,32 @@ def write_progress(db,values):
     path=db.config.data/"updates/status.json";path.parent.mkdir(parents=True,exist_ok=True)
     tmp=path.with_suffix(".tmp");tmp.write_text(json.dumps({**values,"updated_at":time.time()}),encoding="utf-8");tmp.replace(path)
 
+
+def cached_is_older(root,latest,current):
+    if not latest or not current or latest==current:return False
+    executable=shutil.which("git")
+    if not executable:return False
+    try:
+        result=subprocess.run([executable,"-C",str(root),"merge-base","--is-ancestor",latest,current],
+            capture_output=True,timeout=15,creationflags=subprocess.CREATE_NO_WINDOW if os.name=="nt" else 0)
+        return result.returncode==0
+    except (OSError,subprocess.SubprocessError):return False
+
 def status(db):
     cached=db.get("update","latest") or {}
     local=installation(db.config.root)
     progress=read_progress(db)
+    older=cached_is_older(db.config.root,cached.get("latest_commit"),local.get("current_commit"))
     return {**cached,**local,"repository":REPOSITORY,"branch":BRANCH,"progress":progress,
-            "available":bool((local["current_commit"] or cached.get("baseline_commit")) and cached.get("latest_commit") and (local["current_commit"] or cached.get("baseline_commit"))!=cached["latest_commit"]),
+            "available":not older and bool((local["current_commit"] or cached.get("baseline_commit")) and cached.get("latest_commit") and (local["current_commit"] or cached.get("baseline_commit"))!=cached["latest_commit"]),
+            "stale_catalog":older,
             "dismissed":cached.get("dismissed_commit")==cached.get("latest_commit")}
 
 def check(db,http=requests):
     previous=db.get("update","latest") or {}
     try:
         response=http.get(f"https://api.github.com/repos/{REPOSITORY}/commits/{BRANCH}",
-                          headers={"Accept":"application/vnd.github+json","User-Agent":"Playerok-Manager-Updater"},timeout=15)
+                          headers={"Accept":"application/vnd.github+json","User-Agent":"Playerok-Manager-Updater","Cache-Control":"no-cache"},timeout=15)
         if response.status_code==403 or response.status_code==429:raise ValueError("GitHub временно ограничил проверки. Повторите позже.")
         response.raise_for_status();data=response.json();sha=data["sha"]
         if not re.fullmatch(r"[0-9a-f]{40}",sha):raise ValueError("GitHub вернул некорректную версию")
@@ -74,6 +87,7 @@ def request_install(db,sha):
     state=status(db)
     if not state["install_supported"]:raise ValueError(state["install_reason"])
     if not state["available"] or sha!=state.get("latest_commit"):raise ValueError("Список обновлений изменился. Проверьте обновления заново.")
+    if state.get("last_error"):raise ValueError("Сначала выполните успешную проверку обновлений")
     if not state.get("checked_at") or time.time()-state["checked_at"]>3600:raise ValueError("Проверка обновлений устарела. Повторите проверку.")
     try:
         launcher=json.loads((db.config.data/"processes.json").read_text())
