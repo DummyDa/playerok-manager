@@ -346,6 +346,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/catalog-codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Listing */
+        get: operations["listing_api_v1_catalog_codes_get"];
+        put?: never;
+        /** Create */
+        post: operations["create_api_v1_catalog_codes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/catalog-codes/{id}/balance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Change */
+        patch: operations["change_api_v1_catalog_codes__id__balance_patch"];
+        trace?: never;
+    };
+    "/api/v1/catalog-codes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove */
+        delete: operations["remove_api_v1_catalog_codes__id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/catalog-codes/{id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Events */
+        get: operations["events_api_v1_catalog_codes__id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/health": {
         parameters: {
             query?: never;
@@ -466,6 +535,23 @@ export interface paths {
         patch: operations["update_settings_api_v1_settings_patch"];
         trace?: never;
     };
+    "/api/v1/calculator": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Profit Calculator */
+        post: operations["profit_calculator_api_v1_calculator_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/automation/stop": {
         parameters: {
             query?: never;
@@ -562,6 +648,57 @@ export interface paths {
         put?: never;
         /** Sync Lots */
         post: operations["sync_lots_api_v1_lots_sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/lots/{id}/relist-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Relist Preview */
+        post: operations["relist_preview_api_v1_lots__id__relist_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/lots/recoveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Listing Recoveries */
+        get: operations["listing_recoveries_api_v1_lots_recoveries_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/lots/recoveries/{id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume Listing */
+        post: operations["resume_listing_api_v1_lots_recoveries__id__preview_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1117,6 +1254,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/orders/{id}/manual-delivered": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Manual Delivered */
+        post: operations["manual_delivered_api_v1_orders__id__manual_delivered_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/orders/{id}": {
         parameters: {
             query?: never;
@@ -1262,6 +1416,21 @@ export interface components {
              * @default default
              */
             fee_profile_id: string;
+            /**
+             * Keep In Sale
+             * @default false
+             */
+            keep_in_sale: boolean;
+            /**
+             * Premium
+             * @default false
+             */
+            premium: boolean;
+            /**
+             * Premium Max Rub
+             * @default 0
+             */
+            premium_max_rub: number;
             /** Image */
             image: string;
         };
@@ -1295,6 +1464,25 @@ export interface components {
             max_cost_rub: number | string;
             /** Item Ids */
             item_ids: string[];
+        };
+        /** CatalogCodeBalance */
+        CatalogCodeBalance: {
+            /** Balance Rub */
+            balance_rub: number | string;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
+        /** CatalogCodeCreate */
+        CatalogCodeCreate: {
+            /** Amount Rub */
+            amount_rub: number | string;
+            /** Recipient */
+            recipient: string;
+            /** Lot Id */
+            lot_id?: string | null;
         };
         /** CheckInput */
         CheckInput: {
@@ -1535,6 +1723,42 @@ export interface components {
             /** Premium Planned */
             premium_planned: boolean;
         };
+        /** ProfitCalculation */
+        ProfitCalculation: {
+            /** Sale Rub */
+            sale_rub: number | string;
+            /** Purchase */
+            purchase: number | string;
+            /**
+             * Purchase Currency
+             * @default TON
+             * @enum {string}
+             */
+            purchase_currency: "TON" | "RUB";
+            /**
+             * Fee Profile Id
+             * @default default
+             */
+            fee_profile_id: string;
+            /** Ton Rub */
+            ton_rub?: number | string | null;
+            /** Stars Rub */
+            stars_rub?: number | string | null;
+            /** Transfer Stars */
+            transfer_stars?: number | null;
+            /**
+             * Premium Enabled
+             * @default false
+             */
+            premium_enabled: boolean;
+            /** Premium Rub */
+            premium_rub?: number | string | null;
+            /**
+             * Premium Count
+             * @default 1
+             */
+            premium_count: number;
+        };
         /** PromotionSchedule */
         PromotionSchedule: {
             /**
@@ -1558,6 +1782,14 @@ export interface components {
             /** Pair Id */
             pair_id: string;
         };
+        /** RelistPreview */
+        RelistPreview: {
+            /**
+             * Premium
+             * @default false
+             */
+            premium: boolean;
+        };
         /** ResolveOrder */
         ResolveOrder: {
             /**
@@ -1571,12 +1803,32 @@ export interface components {
         };
         /** Settings */
         Settings: {
+            /** Manual Gift Delivery */
+            manual_gift_delivery?: boolean | null;
+            /** Catalog Public Url */
+            catalog_public_url?: string | null;
+            /** Catalog Promo Paid Template */
+            catalog_promo_paid_template?: string | null;
+            /** Catalog Topup Paid Template */
+            catalog_topup_paid_template?: string | null;
+            /** Catalog Selected Template */
+            catalog_selected_template?: string | null;
+            /** Catalog Title Template */
+            catalog_title_template?: string | null;
+            /** Catalog Profit Type */
+            catalog_profit_type?: ("percent" | "rub") | null;
+            /** Catalog Profit Value */
+            catalog_profit_value?: number | string | null;
+            /** Catalog Fee Profile Id */
+            catalog_fee_profile_id?: string | null;
             /** Delivery Transport */
             delivery_transport?: ("mtproto" | "kurigram" | "chrome_extension") | null;
             /** Emergency Stop */
             emergency_stop?: boolean | null;
             /** Repricing Enabled */
             repricing_enabled?: boolean | null;
+            /** Allow Loss Sales */
+            allow_loss_sales?: boolean | null;
             /** Purchases Enabled */
             purchases_enabled?: boolean | null;
             /** Transfers Enabled */
@@ -2344,6 +2596,177 @@ export interface operations {
             };
         };
     };
+    listing_api_v1_catalog_codes_get: {
+        parameters: {
+            query?: {
+                status?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_api_v1_catalog_codes_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CatalogCodeCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    change_api_v1_catalog_codes__id__balance_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CatalogCodeBalance"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_api_v1_catalog_codes__id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    events_api_v1_catalog_codes__id__events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     health_api_v1_health_get: {
         parameters: {
             query?: never;
@@ -2572,6 +2995,41 @@ export interface operations {
             };
         };
     };
+    profit_calculator_api_v1_calculator_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfitCalculation"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     stop_api_v1_automation_stop_post: {
         parameters: {
             query?: never;
@@ -2725,6 +3183,98 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    relist_preview_api_v1_lots__id__relist_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RelistPreview"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listing_recoveries_api_v1_lots_recoveries_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    resume_listing_api_v1_lots_recoveries__id__preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3871,6 +4421,39 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    manual_delivered_api_v1_orders__id__manual_delivered_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

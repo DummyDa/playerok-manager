@@ -7,7 +7,7 @@ from sqlalchemy import update
 from .db import Entity
 from .safety import IntegrationError, gate
 
-FIELDS={"order_id","recipient","title","price","gift","gift_link"}
+FIELDS={"order_id","recipient","title","price","gift","gift_link","delivery_notice"}
 
 
 def validate_template(text):
@@ -17,13 +17,13 @@ def validate_template(text):
     return text
 
 
-def render_template(text, order):
+def render_template(text, order, delivery_notice=""):
     validate_template(text)
     slug=order.get("gift_slug") or ""
     recipient=order.get("recipient") or ""
     result=text.format_map({"order_id":order["id"],"recipient":"@"+recipient.lstrip("@") if recipient else "",
         "title":order.get("title") or "","price":str(order.get("sale_rub") or ""),
-        "gift":slug,"gift_link":"https://t.me/nft/"+slug if slug else ""}).strip()
+        "gift":slug,"gift_link":"https://t.me/nft/"+slug if slug else "","delivery_notice":delivery_notice}).strip()
     if len(result)>4000:raise ValueError("Сообщение после подстановок превышает 4000 символов")
     return result
 
@@ -33,14 +33,23 @@ def queue(db, order, event):
     key=order["id"]+":"+event
     if db.get("buyer_message",key):return
     settings=db.settings()
+    manual=bool(settings.get("manual_gift_delivery") or order.get("manual_delivery_receipt"))
     if not settings.get("buyer_"+event+"_enabled"):return
     try:
-        text=render_template(settings.get("buyer_"+event+"_template") or "",order)
+        template=settings.get("buyer_"+event+"_template") or ""
+        text=render_template(template,order,"🎁 Подарок передаст продавец." if manual else "")
+        from .manual_delivery import buyer_copy
+        text=buyer_copy(db,text)
     except ValueError as exc:
         db.put("buyer_message",key,{"order_id":order["id"],"event":event,"state":"FAILED","error":str(exc)})
         db.log("buyer_message_error","Не удалось подготовить сообщение покупателю",str(exc),"ERROR",order_id=order["id"])
         return
     if not text:return
+    from .catalog_texts import SUPPORT
+    if "!продавец" not in text:text+="\n\n"+SUPPORT
+    if len(text)>4000:
+        db.put("buyer_message",key,{"order_id":order["id"],"event":event,"state":"FAILED","error":"Сообщение с инструкцией поддержки превышает 4000 символов"})
+        return
     db.put("buyer_message",key,{"order_id":order["id"],"event":event,"state":"QUEUED","text":text,
                                "chat_id":order.get("chat_id")})
     db.enqueue("buyer_message",{"message_id":key},key="buyer_message:"+key)

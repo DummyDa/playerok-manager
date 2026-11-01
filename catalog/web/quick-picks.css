@@ -1,0 +1,16 @@
+
+.quick-picks{max-width:1280px;margin:18px auto 4px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+.quick-pick{--quick-accent:#d191ed;--quick-bg:#3b204e;display:grid;grid-template-columns:32px minmax(0,1fr) 18px;align-items:center;gap:13px;min-height:78px;padding:16px 18px;text-align:left;border:1px solid #c68be51c;border-radius:15px;background:linear-gradient(115deg,var(--quick-bg),#101a26);color:#e8eef6;transition:border-color .25s,box-shadow .25s,translate .25s}
+.quick-cheap{--quick-accent:#66d8c2;--quick-bg:#123b39}
+.quick-premium{--quick-accent:#78b9f7;--quick-bg:#153659}
+.quick-numbers{--quick-accent:#ae9afa;--quick-bg:#2f2350}
+.quick-pick>span{min-width:0}.quick-pick strong{display:block;font-size:14px;font-weight:850;line-height:1.3}.quick-pick small{display:block;font-size:10px;font-weight:600;color:#b4c0d2;margin-top:4px;line-height:1.35}
+.quick-pick svg{fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;color:var(--quick-accent)}
+.quick-icon{width:30px;height:30px}.quick-arrow{width:17px;height:17px;transition:translate .25s}
+.quick-pick:hover{translate:0 -2px;border-color:var(--quick-accent)}.quick-pick:hover .quick-arrow{translate:3px 0}
+.quick-pick[aria-pressed=true]{border-color:var(--quick-accent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--quick-accent) 12%,transparent)}
+.light-theme .quick-pick{background:linear-gradient(115deg,color-mix(in srgb,var(--quick-accent) 18%,white),#f8fafc);color:#1c3551;border-color:#d2dce8}
+.light-theme .quick-pick small{color:#63758a}.light-theme .quick-pick svg{color:color-mix(in srgb,var(--quick-accent) 65%,#1c3551)}
+@media(max-width:1000px){.quick-picks{gap:10px}.quick-pick{padding:14px 12px;gap:9px;grid-template-columns:26px minmax(0,1fr) 14px}.quick-pick strong{font-size:12px}.quick-icon{width:25px;height:25px}}
+@media(max-width:760px){.quick-picks{grid-template-columns:repeat(2,minmax(0,1fr));margin-top:12px}.quick-pick{min-height:74px}.quick-pick small{font-size:9px}}
+@media(prefers-reduced-motion:reduce){.quick-pick,.quick-arrow{transition:none}.quick-pick:hover,.quick-pick:hover .quick-arrow{translate:none}}

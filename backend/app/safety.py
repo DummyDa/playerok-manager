@@ -1,4 +1,8 @@
 class IntegrationError(RuntimeError): pass
+class RateLimited(IntegrationError):
+    def __init__(self,message,retry_at):
+        super().__init__(message)
+        self.retry_at=retry_at
 class ManualRequired(IntegrationError): pass
 class WriteBlocked(IntegrationError): pass
 

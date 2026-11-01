@@ -30,3 +30,15 @@ def order_created_at(order):
 
 def newest_orders(orders):
     return sorted(orders,key=lambda order:(order_created_at(order),order["id"]),reverse=True)
+
+
+def order_activity_at(order,operations=()):
+    # Entity.updated historically recorded polling time. Prefer evidence of
+    # actual order activity, including old operations, rather than that stamp.
+    values=[order_created_at(order)]
+    for key in ("activity_at","completed_at","withdraw_at"):
+        if isinstance(order.get(key),(int,float)):values.append(order[key])
+    for operation in operations:
+        for key in ("submitted_at","completed_at","updated_at"):
+            if isinstance(operation.get(key),(int,float)):values.append(operation[key])
+    return max(values)

@@ -1,0 +1,34 @@
+/* Full-width at the top; a floating panel after scrolling. */
+body{padding-top:70px}
+body .header,body:not(.light-theme) .header,body.light-theme .header{
+  position:fixed;inset:0 0 auto;height:70px;z-index:30;
+  background:transparent;border:0;pointer-events:none;
+}
+.header .header-inner{
+  width:100%;max-width:100%;height:70px;margin:0 auto;padding:0 48px;
+  border:1px solid transparent;border-radius:0;background-color:transparent;
+  background-image:radial-gradient(ellipse at 24% 0%,rgba(130,161,199,.12),transparent 68%),
+    linear-gradient(110deg,rgba(30,47,67,.14),rgba(10,18,28,0) 65%);
+  pointer-events:auto;transform:translateY(0);
+  transition:max-width .5s cubic-bezier(.22,1,.36,1),height .5s cubic-bezier(.22,1,.36,1),
+    transform .5s cubic-bezier(.22,1,.36,1),padding .5s cubic-bezier(.22,1,.36,1),
+    background-color .5s,border-color .5s,border-radius .5s,box-shadow .5s;
+}
+.header.is-scrolled .header-inner{
+  max-width:min(1280px,calc(100% - 48px));height:58px;padding:0 20px;
+  transform:translateY(14px);border-radius:14px;
+  background-color:rgba(11,19,29,.8);border-color:rgba(168,184,204,.13);
+  box-shadow:0 8px 28px #0003;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+}
+.light-theme .header .header-inner{
+  background-image:radial-gradient(ellipse at 24% 0%,rgba(144,174,210,.18),transparent 68%),
+    linear-gradient(110deg,rgba(208,222,240,.18),rgba(248,250,252,0) 65%);
+}
+.light-theme .header.is-scrolled .header-inner{
+  background-color:rgba(248,250,252,.86);border-color:rgba(68,91,118,.16);box-shadow:0 8px 28px #182b4012;
+}
+@media(max-width:760px){
+  .header .header-inner{padding:0 18px;gap:12px}
+  .header.is-scrolled .header-inner{max-width:calc(100% - 20px);padding:0 14px;height:58px;transform:translateY(10px);border-radius:12px}
+}
+@media(prefers-reduced-motion:reduce){.header .header-inner{transition:none}}

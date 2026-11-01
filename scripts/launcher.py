@@ -52,12 +52,13 @@ def supervise():
     DATA.mkdir(exist_ok=True)
     with worker_lock(DATA/"launcher.lock"):
         for name in ["stop.request","worker.stop"]:(DATA/name).unlink(missing_ok=True)
-        if not available(8101) or not available(3100):raise SystemExit("Порт 3100 или 8101 уже занят")
+        if any(not available(port) for port in (8101,3100,3180)):raise SystemExit("Порт 3100, 8101 или 3180 уже занят; остановите отдельный каталог")
         node=__import__("shutil").which("node")
         if not node:raise SystemExit("Node.js не найден")
         env={**os.environ,"NEXT_TELEMETRY_DISABLED":"1","PYTHONUTF8":"1"}
         commands={"api":[sys.executable,str(ROOT/"scripts/run_api.py")],"worker":[sys.executable,"-m","backend.app.worker"],
-                  "frontend":[node,str(ROOT/"frontend/node_modules/next/dist/bin/next"),"start","--hostname","127.0.0.1","--port","3100"]}
+                  "frontend":[node,str(ROOT/"frontend/node_modules/next/dist/bin/next"),"start","--hostname","127.0.0.1","--port","3100"],
+                  "catalog":[sys.executable,str(ROOT/"catalog/server.py")]}
         processes={};handles=[];restarts={name:0 for name in commands}
         flags=subprocess.CREATE_NO_WINDOW if os.name=="nt" else 0
         logs=DATA/"logs";logs.mkdir(exist_ok=True)
@@ -80,14 +81,15 @@ def supervise():
                 if ready:break
                 time.sleep(1)
             if not ready:raise RuntimeError("API не запустился; проверьте data/logs/api-console.log")
-            for name in ["frontend","worker"]:processes[name]=spawn(name)
+            for name in ["frontend","worker","catalog"]:processes[name]=spawn(name)
             while not (DATA/"stop.request").exists():
                 STATE.write_text(json.dumps({"supervisor":os.getpid(),"heartbeat":time.time(),"services":{k:{"pid":p.pid,"running":p.poll() is None} for k,p in processes.items()}}))
                 launch_pending_update()
                 for name,p in list(processes.items()):
                     if p.poll() is not None:
                         restarts[name]+=1
-                        if restarts[name]>3:raise RuntimeError(f"Служба {name} завершилась несколько раз; проверьте data/logs")
+                        if restarts[name]>3:
+                            raise RuntimeError(f"Служба {name} завершилась несколько раз; проверьте data/logs")
                         time.sleep(2);processes[name]=spawn(name)
                 time.sleep(1)
         finally:
@@ -119,7 +121,7 @@ def main():
         print("Playerok Manager уже запущен: http://localhost:3100")
         if not args.no_browser:webbrowser.open("http://localhost:3100")
         return
-    if not available(8101) or not available(3100):raise SystemExit("Порт 3100 или 8101 занят другим процессом")
+    if any(not available(port) for port in (8101,3100,3180)):raise SystemExit("Порт 3100, 8101 или 3180 занят другим процессом. Остановите отдельный каталог.")
     if not (ROOT/"frontend/.next/BUILD_ID").exists():raise SystemExit("Сначала запустите setup.bat")
     log=(DATA/"launcher.log").open("ab")
     flags=(subprocess.CREATE_NO_WINDOW|subprocess.CREATE_NEW_PROCESS_GROUP) if os.name=="nt" else 0
@@ -128,12 +130,12 @@ def main():
     import requests
     ready=False
     for _ in range(30):
-        try:ready=requests.get("http://127.0.0.1:3100",timeout=1).status_code==200
+        try:ready=requests.get("http://127.0.0.1:3100",timeout=1).status_code==200 and requests.get("http://127.0.0.1:3180/api/health",timeout=1).status_code==200
         except requests.RequestException:pass
         if ready:break
         time.sleep(1)
     if not ready:raise SystemExit("Службы ещё не готовы. Проверьте status.bat и data/logs.")
-    print("Playerok Manager запущен: http://localhost:3100")
+    print("Playerok Manager: http://localhost:3100 · Каталог: http://localhost:3180")
     if not args.no_browser:webbrowser.open("http://localhost:3100")
 
 if __name__=="__main__":main()

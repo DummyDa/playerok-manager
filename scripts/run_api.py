@@ -8,4 +8,4 @@ if __name__=="__main__":
     log_config={"version":1,"disable_existing_loggers":False,"formatters":{"standard":{"format":"%(asctime)s %(levelname)s %(name)s: %(message)s"}},
         "handlers":{"file":{"class":"logging.handlers.RotatingFileHandler","filename":str(folder/"api.log"),"maxBytes":2000000,"backupCount":3,"encoding":"utf-8","formatter":"standard"}},
         "loggers":{"uvicorn":{"handlers":["file"],"level":"INFO","propagate":False},"uvicorn.access":{"handlers":["file"],"level":"WARNING","propagate":False}},"root":{"handlers":["file"],"level":"WARNING"}}
-    uvicorn.run("backend.app.main:app",host="127.0.0.1",port=8101,log_config=log_config)
+    uvicorn.run("backend.app.main:app",host="127.0.0.1",port=8101,log_config=log_config,proxy_headers=False)

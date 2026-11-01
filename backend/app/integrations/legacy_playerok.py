@@ -122,6 +122,7 @@ class PlayerokListingInput:
     price: int
     description: str
     image_bytes: bytes
+    keep_in_sale: bool = False
     image_filename: str = "listing.png"
     image_mime: str | None = None
     premium: bool = False
@@ -166,9 +167,10 @@ class PlayerokListingClient:
                 {"http": config.playerok_proxy, "https": config.playerok_proxy}
             )
 
-    def create_and_publish(self, listing: PlayerokListingInput) -> PlayerokListingResult:
-        collection_slug = self.resolve_collection(listing.collection)
-        draft = self.create_item(listing, collection_slug)
+    def create_and_publish(self, listing: PlayerokListingInput, before_publish=None, draft=None) -> PlayerokListingResult:
+        if draft is None:
+            collection_slug = self.resolve_collection(listing.collection)
+            draft = self.create_item(listing, collection_slug)
         item_id = _required_str(draft, "id", "createItem")
         raw_price = _optional_int(draft.get("rawPrice")) or listing.price
         price = _optional_int(draft.get("price")) or raw_price
@@ -196,10 +198,12 @@ class PlayerokListingClient:
         if listing.premium:
             self.get_viewer_has_enabled_notifications()
             self.get_viewer_local_balance()
+        if before_publish is not None:before_publish(item_id,priority_status)
         published = self.publish_item(
             item_id,
             priority_status_id,
             premium=listing.premium,
+            keep_in_sale=listing.keep_in_sale,
         )
         return PlayerokListingResult(
             item_id=_required_str(published, "id", "publishItem"),
@@ -547,12 +551,13 @@ class PlayerokListingClient:
         item_id: str,
         priority_status_id: str,
         premium: bool = False,
+        keep_in_sale: bool = False,
     ) -> dict[str, Any]:
         input_payload: dict[str, Any] = {
             "transactionProviderId": "LOCAL",
             "priorityStatuses": [priority_status_id],
             "itemId": item_id,
-            "keepInSale": False,
+            "keepInSale": keep_in_sale,
         }
         if premium:
             input_payload["transactionProviderData"] = {"paymentMethodId": None}
@@ -641,7 +646,9 @@ class PlayerokListingClient:
                 data=data,
                 files=files,
                 headers=self._headers(operation_name, gql_path, accept="*/*"),
-                timeout=self.config.playerok_request_timeout,
+                # Uploading/rendering listing images can outlive normal reads.
+                # Keep a bounded connection timeout and never retry a POST.
+                timeout=(min(30,self.config.playerok_request_timeout),max(120,self.config.playerok_request_timeout)),
             )
         except Exception as exc:
             if _is_transport_error(exc):

@@ -1,0 +1,13 @@
+
+.card-reveal-pending{opacity:0}
+#gift-dialog[open]:not(.is-closing){animation:gift-dialog-enter .36s cubic-bezier(.22,1,.36,1);transform-origin:50% 55%}
+#gift-dialog[open]::backdrop{animation:gift-backdrop-enter .25s ease-out}
+#gift-dialog[open] .detail-visual{animation:gift-content-enter .4s cubic-bezier(.22,1,.36,1) .035s backwards}
+#gift-dialog[open] .detail-traits{animation:gift-content-enter .38s cubic-bezier(.22,1,.36,1) .08s backwards}
+#gift-dialog[open] .check-button{animation:gift-content-enter .36s cubic-bezier(.22,1,.36,1) .12s backwards}
+#gift-dialog.is-closing::backdrop{animation:gift-backdrop-exit .16s ease-in forwards}
+@keyframes gift-dialog-enter{from{opacity:0;transform:translateY(20px) scale(.94)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes gift-content-enter{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:translateY(0)}}
+@keyframes gift-backdrop-enter{from{opacity:0}to{opacity:1}}
+@keyframes gift-backdrop-exit{to{opacity:0}}
+@media(prefers-reduced-motion:reduce){.card-reveal-pending{opacity:1}#gift-dialog[open],#gift-dialog[open]::backdrop,#gift-dialog[open] .detail-visual,#gift-dialog[open] .detail-traits,#gift-dialog[open] .check-button{animation:none}}

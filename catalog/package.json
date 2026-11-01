@@ -1,0 +1,19 @@
+{
+  "name": "giftroom-hero-effects",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:effects": "esbuild effects/entry.jsx --bundle --external:/hero-gifts.webp --jsx=automatic --minify --format=esm --target=es2022 --outfile=web/hero-grid.js --define:process.env.NODE_ENV=\"'production'\" && esbuild effects/nft-animation.js --bundle --minify --format=esm --outfile=web/nft-animation.js"
+  },
+  "dependencies": {
+    "@radix-ui/react-popover": "^1.3.1",
+    "@radix-ui/react-select": "^2.4.1",
+    "lottie-web": "^5.13.0",
+    "lucide-react": "^1.65.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

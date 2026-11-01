@@ -3,23 +3,25 @@ import { useEffect, useState } from "react";
 import useSWR, { mutate } from "swr";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Boxes, ReceiptText, Gift, SlidersHorizontal, Percent, ScanLine, ArrowUp, ChartNoAxesCombined, History, Settings2, Sparkles, ShieldCheck, OctagonPause, LogOut, ArrowRight, RefreshCw, Menu, ChevronRight, Bell, Play } from "lucide-react";
+import { LayoutDashboard, Boxes, ReceiptText, Gift, SlidersHorizontal, Percent, ScanLine, ArrowUp, ChartNoAxesCombined, History, Settings2, Sparkles, ShieldCheck, OctagonPause, LogOut, ArrowRight, RefreshCw, Menu, ChevronRight, Bell, Play, Store } from "lucide-react";
 import { api, setCsrf, typedClient } from "../lib/api";
 import { Badge, Button, Field, Notice, Spinner, money } from "./ui";
-import { Overview, Lots, Gifts, Pricing, Fees, Competitors, Promotions, Orders, Finance, Events, Settings } from "./Sections";
+import { Overview, Lots, Gifts, Pricing, Fees, Competitors, Promotions, Orders, Finance, Events, Settings, Catalog } from "./Sections";
+import ProfitCalculator from "./ProfitCalculator";
 import { UpdateBanner } from "./Updates";
 import ReadStatus from "./ReadStatus";
 import ThemeToggle from "./ThemeToggle";
 
 const nav = [
   ["", "Обзор", LayoutDashboard], ["lots", "Лоты", Boxes], ["orders", "Заказы", ReceiptText],
-  ["gifts", "NFT Gifts", Gift], ["pricing", "Автоцены", SlidersHorizontal], ["fees", "Комиссии", Percent],
+  ["gifts", "NFT Gifts", Gift], ["catalog", "Каталог", Store], ["pricing", "Автоцены", SlidersHorizontal], ["calculator", "Калькулятор", Percent], ["fees", "Комиссии", Percent],
   ["competitors", "Конкуренты", ScanLine], ["promotions", "Поднятия", ArrowUp], ["finance", "Финансы", ChartNoAxesCombined],
   ["history", "История", History], ["settings", "Настройки", Settings2],
 ] as const;
 const descriptions: Record<string, string> = {
   "": "Продажи, подарки и автоматизация — под контролем.", lots: "Объявления Playerok и точные привязки к NFT.", orders: "Каждый заказ — от оплаты до подтверждённой выдачи.",
-  gifts: "Коллекции, модели и актуальные предложения MRKT.", pricing: "Безопасная цена с учётом закупки, комиссий и прибыли.", fees: "Прозрачный расчёт каждого удержания.",
+  calculator: "Прибыль с учётом комиссий, закупки, Stars и премиума.",
+  gifts: "Коллекции, модели и актуальные предложения MRKT.", catalog: "Коды, баланс заказов, цены и оформление лотов каталога.", pricing: "Безопасная цена с учётом закупки, комиссий и прибыли.", fees: "Прозрачный расчёт каждого удержания.",
   competitors: "Следите за предложениями той же коллекции и модели.", promotions: "Премиум для активных объявлений — вручную и по расписанию.",
   finance: "Фактические операции и прогнозы отдельно.", history: "Изменения, проверки и результаты действий системы.", settings: "Подключения, лимиты и разрешения на автоматизацию.",
 };
@@ -70,8 +72,8 @@ function Workspace() {
   const shared = { act, busy };
   const sections: Record<string, React.ReactNode> = {
     "": <Overview {...shared} />, lots: <Lots {...shared} />, gifts: <Gifts {...shared} />, fees: <Fees {...shared} />,
-    pricing: <Pricing {...shared} />, competitors: <Competitors {...shared} />, promotions: <Promotions {...shared} />,
-    orders: <Orders {...shared} />, finance: <Finance />, history: <Events />, settings: <Settings {...shared} />,
+    calculator: <ProfitCalculator />, pricing: <Pricing {...shared} />, competitors: <Competitors {...shared} />, promotions: <Promotions {...shared} />,
+    orders: <Orders {...shared} />, finance: <Finance />, history: <Events />, settings: <Settings {...shared} />, catalog: <Catalog {...shared} />,
   };
   return <div className={`workspace ${sidebarExpanded ? "sidebar-expanded" : ""} ${sidebarAnimated ? "sidebar-motion" : ""}`}><a href="#main-content" className="skip-link">К содержимому</a>
     {menu && <button className="menu-backdrop" aria-label="Закрыть меню" onClick={() => setMenu(false)} />}

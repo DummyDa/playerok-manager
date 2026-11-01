@@ -14,7 +14,8 @@ from .mrkt_availability import gift_block_reason
 from ..db import Database
 from ..order_dates import order_created_at
 from ..pricing import D
-from ..safety import IntegrationError,ManualRequired,WriteBlocked,gate
+from ..safety import IntegrationError,ManualRequired,WriteBlocked,RateLimited,gate
+from ..tls_ca import ca_bundle_path
 
 class GuardSession(requests.Session):
     def __init__(self, db): super().__init__(); self.db = db
@@ -87,6 +88,12 @@ class Playerok:
         payload={"operationName":"createChatMessage","variables":{"input":{"chatId":chat_id,"imagesIds":[],"text":text}},"query":query}
         # Use our single-attempt transport, not the SDK's automatic POST retries.
         return self.client._graphql_post_json(payload,"createChatMessage","/deal/[id]").get("createChatMessage")
+    def set_deal_status(self, deal_id, status):
+        if status not in {"SENT","ROLLED_BACK"}:raise ValueError("Недопустимый статус сделки")
+        gate(self.db)
+        query="mutation updateDeal($input:UpdateItemDealInput!){updateDeal(input:$input){id status}}"
+        return self.client._graphql_post_json({"operationName":"updateDeal","variables":{"input":{"id":deal_id,"status":status}},"query":query},"updateDeal","/deal/"+deal_id)
+
     def item(self, slug): return self.client.get_item(slug)
     def lots(self):
         account = self.db.settings().get("playerok_account_id")
@@ -116,11 +123,29 @@ class Playerok:
         gate(self.db)
         return self.client.update_item(id, **{k:v for k,v in data.items() if k in {"price","name","description"}})
 
-    def create(self, data, image):
+    def create(self, data, image, before_publish=None):
         gate(self.db)
+        resume={}
+        if data.get("resume_slug"):
+            draft=self.item(data["resume_slug"])
+            if (draft.get("id")!=data.get("resume_item_id") or draft.get("status")!="DRAFT"
+                or draft.get("name")!=data["title"] or D(draft.get("price",0))!=D(data["price"])
+                or (draft.get("description") or "").strip()!=data.get("description","").strip()
+                or (draft.get("user") or {}).get("id")!=self.db.settings().get("playerok_account_id")):
+                raise ValueError("Черновик изменился или уже опубликован. Обновите список лотов")
+            resume={"draft":draft}
         listing = PlayerokListingInput(title=data["title"], collection=data["collection"], price=int(data["price"]),
-            description=data.get("description", ""), image_bytes=image, image_filename=data.get("filename", "gift.png"), premium=False)
-        return asdict(self.client.create_and_publish(listing))
+            description=data.get("description", ""), image_bytes=image, image_filename=data.get("filename", "gift.png"), premium=bool(data.get("premium",False)), keep_in_sale=bool(data.get("keep_in_sale",False)))
+        if not listing.premium:return asdict(self.client.create_and_publish(listing,**resume))
+        gate(self.db,"promotions")
+        def check(item_id,tariff):
+            gate(self.db,"promotions")
+            cost=D(tariff.get("price",0))
+            if cost<=0 or cost>D(data.get("premium_max_rub",0)):raise ValueError("Стоимость премиума выше лимита; черновик создан, платная публикация не выполнена")
+            balance=(self.viewer().get("balance") or {}).get("available")
+            if balance is None or D(balance)<cost:raise ValueError("Недостаточно средств Playerok; черновик не опубликован")
+            if before_publish:before_publish(item_id,tariff)
+        return asdict(self.client.create_and_publish(listing,before_publish=check,**resume))
 
     def account(self):
         # Upstream's wheel omits its bundled CA file. Restore it in this
@@ -135,7 +160,10 @@ class Playerok:
         except ImportError:from playerokapi.account import Account
         kwargs = {"cookies": self.cookies, "user_agent": self.config.playerok_user_agent, "requests_timeout": self.config.playerok_request_timeout}
         if self.config.playerok_proxy: kwargs["proxy"] = self.config.playerok_proxy
-        return Account(**kwargs).get()
+        account=Account(**kwargs)
+        account._tmp_cert_path=ca_bundle_path()
+        account._refresh_clients()
+        return account.get()
 
     def orders(self, deal_id=None):
         account = self.account()
@@ -158,9 +186,15 @@ class Playerok:
             # deals before WAITING_DATA or purchase preflight; historical deals
             # do not need an extra request on every polling cycle.
             summary_item = getattr(d, "item", None)
+            buyer_required=False
+            if not deal_id and enum(getattr(d,"status",None))=="PAID" and not (getattr(getattr(summary_item,"buyer",None),"id",None) or getattr(getattr(d,"user",None),"id",None)):
+                bound=self.db.get("lot",order_lot_id(self.db,summary_item)) or {}
+                started=self.db.settings().get("catalog_promo_started_at")
+                buyer_required=bool(bound.get("catalog_credit_id") or (started and bound.get("pair_id") and bound.get("delivery_mode")!="manual" and not bound.get("catalog_gift_id") and order_created_at({"id":str(d.id),"created_at":getattr(d,"created_at",None)})>=started))
             if (not deal_id and enum(getattr(d,"status",None)) == "PAID"
                     and (recipient is None or not getattr(summary_item,"slug",None)
-                         or getattr(summary_item,"price",None) is None)):
+                         or getattr(summary_item,"price",None) is None
+                         or buyer_required)):
                 detail = account.get_deal(str(d.id))
                 if not detail or str(detail.id) != str(d.id) or enum(getattr(detail,"direction",None)) != "OUT":
                     raise IntegrationError("Playerok не подтвердил полные данные исходящей сделки")
@@ -173,7 +207,8 @@ class Playerok:
                            "created_at":order_created_at({"id":str(d.id),"created_at":getattr(d,"created_at",None)}),
                            "source_item_id":str(getattr(item,"id","") or ""),"lot_slug":getattr(item,"slug",None),
                            "chat_id":str(getattr(getattr(d,"chat",None),"id","") or ""),
-                           "title":str(getattr(item,"name","") or ""),"sale_rub":str(price or 0),"recipient":recipient})
+                           "buyer_id":str(getattr(getattr(item,"buyer",None),"id",None) or getattr(getattr(d,"user",None),"id","") or "") or None,
+                           "buyer_username":getattr(getattr(d,"user",None),"username",None),"title":str(getattr(item,"name","") or ""),"sale_rub":str(price or 0),"recipient":recipient})
         return result
 
 def telegram_options(config):
@@ -189,7 +224,7 @@ class Mrkt:
     def __init__(self, db):
         self.db, self.config = db, db.config
         self.token = None
-        self.http = curl_requests.Session(impersonate="chrome")
+        self.http = curl_requests.Session(impersonate="chrome",verify=ca_bundle_path())
         self.headers = {"Content-Type":"application/json", "Origin":"https://cdn.tgmrkt.io", "Referer":"https://cdn.tgmrkt.io/"}
 
     def telegram(self, operation):
@@ -222,7 +257,7 @@ class Mrkt:
         strikes=int(throttle.get("rate_limits",0))+1
         retry=max(1,retry,min(3600,60*2**min(strikes-1,6)))
         self.db.put("throttle","mrkt",{"next":time.time()+retry,"rate_limits":strikes})
-        raise IntegrationError("MRKT ограничил частоту запросов")
+        raise RateLimited("MRKT ограничил частоту запросов",time.time()+retry)
 
     def authenticate(self):
         async def auth(client):
@@ -240,10 +275,10 @@ class Mrkt:
         if write: gate(self.db, "purchases")
         throttle = self.db.get("throttle", "mrkt") or {}
         delay = throttle.get("next",0)-time.time()
-        if delay > 2: raise IntegrationError(f"MRKT: пауза по ограничению запросов ещё {delay:.0f} секунд")
-        if delay > 0: time.sleep(delay)
+        if delay > 2: raise RateLimited(f"MRKT: пауза по ограничению запросов ещё {delay:.0f} секунд",throttle["next"])
         if not self.token: self.authenticate()
-        self.db.put("throttle","mrkt",{"next":time.time()+1.5})
+        delay=self.db.reserve_throttle("mrkt",1.5)
+        if delay > 0: time.sleep(delay)
         if write:gate(self.db,"purchases")
         response = self.http.request(method,self.config.get("MRKT_API_URL","https://api.tgmrkt.io/api/v1")+path,
             headers={**self.headers,"Authorization":self.token},json=payload,timeout=20)

@@ -13,3 +13,5 @@ curl-cffi>=0.13,<1
 httpx>=0.28,<1
 pytest>=8,<10
 git+https://github.com/alleexxeeyy/PlayerokAPI.git@52e4c740eb084d75dd063ff025acc3e3a0569a52
+
+Pillow==13.0.0

@@ -29,6 +29,23 @@ def test_templates_render_only_known_fields_and_allow_literal_braces():
         with pytest.raises(ValueError):Settings(buyer_paid_template=text)
 
 
+def test_manual_mode_uses_saved_template_and_respects_toggle(db,messaging):
+    order,_,_=messaging
+    db.configure(manual_gift_delivery=True,buyer_paid_template="Мой текст {price}. {delivery_notice}")
+    replies.queue(db,order,"paid")
+    assert db.get("buyer_message","o:paid")["text"].startswith("Мой текст 565. 🎁 Подарок передаст продавец.")
+    db.configure(buyer_delivered_enabled=False)
+    replies.queue(db,order,"delivered")
+    assert not db.get("buyer_message","o:delivered")
+
+
+def test_message_migration_is_once_and_keeps_future_edits(db):
+    db.configure(buyer_paid_template="Мой новый текст",catalog_promo_paid_template="Мой каталог {url}")
+    db.initialize()
+    assert db.settings()["buyer_paid_template"]=="Мой новый текст"
+    assert db.settings()["catalog_promo_paid_template"]=="Мой каталог {url}"
+
+
 def test_duplicate_event_and_repeated_task_send_only_one_message(db,messaging):
     order,api,service=messaging
     replies.queue(db,order,"paid")
@@ -36,7 +53,7 @@ def test_duplicate_event_and_repeated_task_send_only_one_message(db,messaging):
     assert len(db.list("buyer_message"))==1
     replies.send(service,"o:paid")
     replies.send(service,"o:paid")
-    api.send_chat_message.assert_called_once_with("deal-chat","Оплата 565 ₽ за Chill Flame, @buyer")
+    api.send_chat_message.assert_called_once_with("deal-chat","Оплата 565 ₽ за Chill Flame, @buyer\n\n"+replies_support())
     assert db.get("buyer_message","o:paid")["state"]=="SENT"
     assert db.get("order","o")["stage"]=="TRANSFERRED"
 
@@ -66,7 +83,7 @@ def test_confirmed_delivery_reply_contains_exact_gift_link(db,messaging):
     order,api,service=messaging
     replies.queue(db,order,"delivered")
     replies.send(service,"o:delivered")
-    api.send_chat_message.assert_called_once_with("deal-chat","Передан ChillFlame-306647: https://t.me/nft/ChillFlame-306647")
+    api.send_chat_message.assert_called_once_with("deal-chat","Передан ChillFlame-306647: https://t.me/nft/ChillFlame-306647\n\n"+replies_support())
 
 
 def test_recovery_does_not_repeat_submitted_reply(db,messaging):
@@ -143,3 +160,8 @@ def test_service_queues_delivered_reply_only_after_confirmation(db,monkeypatch,c
         service.process_order("o")
         assert len(db.list("buyer_message"))==1
         assert db.get("buyer_message","o:delivered")["state"]=="QUEUED"
+
+
+def replies_support():
+    from backend.app.catalog_texts import SUPPORT
+    return SUPPORT

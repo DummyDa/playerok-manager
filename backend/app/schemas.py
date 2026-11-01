@@ -6,15 +6,49 @@ Money=Decimal
 class Strict(BaseModel):
     model_config=ConfigDict(extra="forbid",allow_inf_nan=False)
 
+class ProfitCalculation(Strict):
+    sale_rub:Decimal=Field(gt=0,le=10000000)
+    purchase:Decimal=Field(ge=0,le=10000000)
+    purchase_currency:Literal["TON","RUB"]="TON"
+    fee_profile_id:str=Field(default="default",max_length=100)
+    ton_rub:Decimal|None=Field(default=None,gt=0,le=10000000)
+    stars_rub:Decimal|None=Field(default=None,ge=0,le=10000000)
+    transfer_stars:int|None=Field(default=None,ge=0,le=100000)
+    premium_enabled:bool=False
+    premium_rub:Decimal|None=Field(default=None,ge=0,le=10000000)
+    premium_count:int=Field(default=1,ge=1,le=1000)
+
 class Password(Strict): password:str=Field(min_length=10,max_length=128)
+class RelistPreview(Strict):
+    premium:bool=False
 class PasswordChange(Strict):
     current_password:str=Field(min_length=1,max_length=128)
     new_password:str=Field(min_length=10,max_length=128)
 class Cookies(Strict): cookies:str=Field(min_length=10,max_length=20000)
+
+class CatalogCodeCreate(Strict):
+    amount_rub:Decimal=Field(gt=0,le=10000000,max_digits=10,decimal_places=0)
+    recipient:str=Field(min_length=5,max_length=33,pattern=r"^@?[A-Za-z][A-Za-z0-9_]{4,31}$")
+    lot_id:str|None=Field(default=None,max_length=100)
+
+class CatalogCodeBalance(Strict):
+    balance_rub:Decimal=Field(ge=0,le=10000000,max_digits=10,decimal_places=0)
+    note:str=Field(default="",max_length=500)
+
 class Settings(Strict):
+    manual_gift_delivery:bool|None=None
+    catalog_public_url:str|None=Field(default=None,max_length=700)
+    catalog_promo_paid_template:str|None=Field(default=None,max_length=4000)
+    catalog_topup_paid_template:str|None=Field(default=None,max_length=4000)
+    catalog_selected_template:str|None=Field(default=None,max_length=4000)
+    catalog_title_template:str|None=Field(default=None,min_length=1,max_length=200)
+    catalog_profit_type:Literal["percent","rub"]|None=None
+    catalog_profit_value:Decimal|None=Field(default=None,ge=0)
+    catalog_fee_profile_id:str|None=Field(default=None,min_length=1,max_length=100)
     delivery_transport:Literal["mtproto","kurigram","chrome_extension"]|None=None
     emergency_stop:bool|None=None
     repricing_enabled:bool|None=None
+    allow_loss_sales:bool|None=None
     purchases_enabled:bool|None=None
     transfers_enabled:bool|None=None
     promotions_enabled:bool|None=None
@@ -41,6 +75,10 @@ class Settings(Strict):
         from .buyer_messages import validate_template
         for template in (self.buyer_paid_template,self.buyer_delivered_template):
             if template is not None:validate_template(template)
+        from .catalog_messages import validate_template as catalog_template,validate_url
+        for template in (self.catalog_promo_paid_template,self.catalog_topup_paid_template,self.catalog_selected_template):
+            if template is not None:catalog_template(template)
+        if self.catalog_public_url:validate_url(self.catalog_public_url)
         return self
 
 class Fee(Strict):

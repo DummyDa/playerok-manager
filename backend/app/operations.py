@@ -24,11 +24,22 @@ def submit(db, id):
     return db.get("operation",id)
 
 def recover(db):
+    for message in db.list("catalog_message",100000):
+        if message["state"]=="SUBMITTED":
+            db.put("catalog_message",message["id"],{"state":"UNKNOWN","error":"Отправка прервана перезапуском; повтор только после сверки чата"})
+            db.put("catalog_credit_event",uid(),{"payment_id":message["credit_id"],"action":"MESSAGE_UNKNOWN","at":time.time(),"deal_id":message["deal_id"]})
+        elif message["state"]=="QUEUED":db.enqueue("catalog_message",{"message_id":message["id"]},key="catalog_message:"+message["id"])
+    for message in db.list("grant_message",100000):
+        if message.get("state")=="SUBMITTED":db.put("grant_message",message["id"],{"state":"UNKNOWN"})
+        elif message.get("state")=="QUEUED":db.enqueue("grant_message",{"message_id":message["id"]},key="grant_message:"+message["id"])
+    for checkout in db.list("catalog_checkout",100000):
+        if checkout.get("state") in {"CREATING","EXPIRING"}:
+            db.put("catalog_checkout",checkout["id"],{"state":"UNKNOWN","error":"Запрос прерван перезапуском; требуется сверка Playerok, автоматического повтора нет"})
     from sqlalchemy import select
     from .db import Task
     with db.tx() as s:
         for task in s.scalars(select(Task).where(Task.state=="RUNNING")):
-            if task.kind=="telegram_auth":
+            if task.kind in {"telegram_auth","catalog_create"}:
                 task.state="FAILED";task.dedupe=None;task.error="Шаг входа прерван перезапуском; автоматический повтор отключён"
             else:task.state="READY"
             task.lease=None

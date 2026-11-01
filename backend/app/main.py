@@ -17,9 +17,11 @@ from .db import Database,Entity,Task,Login,uid
 from . import schemas
 from .auth import session,create_session,password_hash,password_valid
 from .operations import new_operation,submit,order_retry_reason
-from .order_dates import newest_orders
+from .order_dates import newest_orders,order_activity_at
 from .safety import WriteBlocked,gate,is_nft_lot
 from .pricing import D,effective_fx
+from .listing_prices import validate_price
+from .web_security import budget,local_request
 
 def old_running():
     import requests
@@ -36,7 +38,7 @@ def create_app(db:Database|None=None):
         db.enqueue("check_updates",key="check_updates")
         db.put("clock","check_updates",{"next":time.time()+900})
         yield
-    app=FastAPI(title="Playerok Manager 2",version="1.0.0",docs_url="/api/docs",openapi_url="/api/openapi.json",lifespan=lifespan)
+    app=FastAPI(title="Playerok Manager 2",version="1.0.0",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.db=db
     from .connection_api import router as connection_router
     app.include_router(connection_router(db))
@@ -44,6 +46,8 @@ def create_app(db:Database|None=None):
     app.include_router(update_router(db))
     from .browser_delivery import router as browser_router
     app.include_router(browser_router(db))
+    from .catalog_codes import router as catalog_codes_router
+    app.include_router(catalog_codes_router(db))
     public_origin=db.config.get("PUBLIC_ORIGIN").rstrip("/")
     public_url=urlsplit(public_origin)
     if public_origin and (public_url.scheme!="https" or not public_url.hostname or public_url.path or public_url.query or public_url.fragment or public_url.username):
@@ -80,6 +84,12 @@ def create_app(db:Database|None=None):
             return await call_next(request)
         except HTTPException as exc:return JSONResponse({"detail":exc.detail},status_code=exc.status_code)
 
+    @app.middleware("http")
+    async def response_security(request,call_next):
+        response=await call_next(request)
+        response.headers.update({"X-Content-Type-Options":"nosniff","X-Frame-Options":"DENY","Referrer-Policy":"no-referrer","Cache-Control":"no-store","Permissions-Policy":"camera=(), microphone=(), geolocation=()"})
+        return response
+
     @app.exception_handler(ValueError)
     @app.exception_handler(WriteBlocked)
     async def bad_request(request,exc):return JSONResponse({"detail":db.redact(exc)},status_code=400)
@@ -100,13 +110,17 @@ def create_app(db:Database|None=None):
     def login_response(response,password,request):
         token,csrf=create_session(db)
         configured_origin=db.config.get("PUBLIC_ORIGIN").rstrip("/")
-        secure=bool(configured_origin and request.headers.get("origin")==configured_origin) or request.headers.get("x-forwarded-proto")=="https"
+        secure=bool(configured_origin and (request.url.hostname==urlsplit(configured_origin).hostname or request.headers.get("origin")==configured_origin)) or request.url.scheme=="https"
         response.set_cookie("manager_session",token,httponly=True,secure=secure,samesite="strict",max_age=86400,path="/")
         return {"authenticated":True,"csrf":csrf}
 
     @app.post("/api/v1/auth/setup")
     def setup(payload:schemas.Password,response:Response,request:Request)->dict:
         if db.secret("password"):raise HTTPException(409,"Пароль уже создан")
+        if db.config.get("PUBLIC_ORIGIN"):
+            raise HTTPException(403,"При внешнем доступе первый пароль создаётся на сервере: python scripts/bootstrap_admin.py")
+        if not local_request(request):raise HTTPException(403,"Первый пароль создаётся только локально. Откройте панель через SSH-туннель.")
+        budget(db,"admin_setup","all",5,60)
         # Unique primary key makes concurrent initial setup fail closed.
         from .db import Secret
         from sqlalchemy.exc import IntegrityError
@@ -117,6 +131,7 @@ def create_app(db:Database|None=None):
 
     @app.post("/api/v1/auth/login")
     def login(payload:schemas.Password,response:Response,request:Request)->dict:
+        budget(db,"admin_login","all",10,60)
         key=request.client.host if request.client else "local"
         attempt=db.get("auth_attempt",key) or {}
         if attempt.get("blocked_until",0)>time.time():raise HTTPException(429,"Слишком много попыток входа; подождите минуту")
@@ -150,6 +165,11 @@ def create_app(db:Database|None=None):
         result=db.settings();result.pop("bot_offset",None)
         return result
 
+    @app.post("/api/v1/calculator")
+    def profit_calculator(payload:schemas.ProfitCalculation)->dict:
+        from .profit_calculator import estimate_profit
+        return estimate_profit(db,payload)
+
     @app.patch("/api/v1/settings")
     def update_settings(payload:schemas.Settings)->dict:
         data=payload.model_dump(exclude_unset=True,mode="json")
@@ -158,6 +178,7 @@ def create_app(db:Database|None=None):
             if any(j["state"] in ACTIVE for j in db.list("browser_job")):raise ValueError("Сначала завершите текущую передачу через Chrome")
             data["delivery_tested"]=False
         if any(v is None for k,v in data.items() if k not in ("stars_rub","manual_ton_rub")):raise ValueError("Пустое значение настройки")
+        if "catalog_fee_profile_id" in data and not db.get("fees",data["catalog_fee_profile_id"]):raise ValueError("Профиль комиссий каталога не найден")
         merged={**db.settings(),**data}
         if merged.get("ton_rate_mode")=="manual" and (merged.get("manual_ton_rub") is None or D(merged["manual_ton_rub"])<=0):
             raise ValueError("Задайте положительный ручной курс TON")
@@ -199,6 +220,8 @@ def create_app(db:Database|None=None):
     @app.get("/api/v1/dashboard")
     def dashboard(start:float|None=None,end:float|None=None)->dict:
         lots=db.list("lot");orders=db.list("order");ledger=db.list("ledger",100000)
+        from .catalog_orders import grouped_orders
+        orders=grouped_orders(db,orders,ledger)
         ledger=[e for e in ledger if (start is None or e["updated_at"]>=start) and (end is None or e["updated_at"]<=end)]
         total=lambda kind:str(sum((D(e["amount_rub"]) for e in ledger if e.get("type")==kind),D(0)))
         revenue=D(total("revenue"));expenses=sum((D(total(k)) for k in ["purchase","transfer","promotion","fees"]),D(0))
@@ -217,6 +240,22 @@ def create_app(db:Database|None=None):
 
     @app.post("/api/v1/lots/sync")
     def sync_lots()->dict:return {"task_id":db.enqueue("sync_lots")}
+
+    @app.post("/api/v1/lots/{id}/relist-preview")
+    def relist_preview(id:str,payload:schemas.RelistPreview|None=None)->dict:
+        lot=db.get("lot",id)
+        if not lot:raise ValueError("Лот не найден")
+        if lot.get("status") not in {"SOLD","DISCONTINUED"}:raise ValueError("Повторно выставить можно проданный или снятый с продажи лот")
+        if lot.get("lot_type")=="TEMPORARY" or lot.get("catalog_checkout_id") or lot.get("funding_purpose"):raise ValueError("Временный лот каталога или доплаты нельзя выставлять повторно")
+        if payload and payload.premium:return {"task_id":db.enqueue("preview_relist",{"lot_id":id,"premium":True})}
+        return new_operation(db,"relist",{"lot_id":id,"title":lot.get("title"),"price":lot.get("price"),"premium":False,"keep_in_sale":bool(lot.get("keep_in_sale",False))},{"cost_rub":"0"})
+
+    @app.get("/api/v1/lots/recoveries")
+    def listing_recoveries()->dict:
+        return {"items":[{"id":o["id"],"title":o.get("payload",{}).get("fields",{}).get("title"),"error":o.get("error")} for o in db.list("operation",100000) if o.get("action")=="create" and o.get("state") in {"UNKNOWN","FAILED"} and not o.get("payload",{}).get("resume_of")]}
+
+    @app.post("/api/v1/lots/recoveries/{id}/preview")
+    def resume_listing(id:str)->dict:return {"task_id":db.enqueue("preview_resume_create",{"operation_id":id},key="resume_preview:"+id)}
 
     @app.get("/api/v1/lots/capabilities")
     def capabilities()->dict:return {"create":True,"edit":True,"premium":True,"quantity":False,"enable":False,"disable":False,"delete":False,
@@ -245,6 +284,7 @@ def create_app(db:Database|None=None):
     def edit_preview(id:str,payload:schemas.LotChange)->dict:
         if not db.get("lot",id):raise HTTPException(404,"Лот не найден")
         data=payload.model_dump(exclude_none=True)
+        if "price" in data:validate_price(db.get("lot",id),data["price"])
         if not data:raise ValueError("Нет изменений")
         return new_operation(db,"update",{"lot_id":id,"changes":data})
 
@@ -253,15 +293,17 @@ def create_app(db:Database|None=None):
         return {"items":[edit_preview(id,payload.changes) for id in dict.fromkeys(payload.item_ids)]}
 
     @app.post("/api/v1/lots/create-preview")
-    async def create_preview(title:str=Form(...),collection:str=Form(...),pair_id:str=Form(...),price:int=Form(...),description:str=Form(""),fee_profile_id:str=Form("default"),image:UploadFile=File(...))->dict:
+    async def create_preview(title:str=Form(...),collection:str=Form(...),pair_id:str=Form(...),price:int=Form(...),description:str=Form(""),fee_profile_id:str=Form("default"),keep_in_sale:bool=Form(False),premium:bool=Form(False),premium_max_rub:int=Form(0),image:UploadFile=File(...))->dict:
         pair=db.get("pair",pair_id)
         if not pair or pair["collection"]!=collection:raise ValueError("Выберите точную коллекцию и модель")
         if not db.get("fees",fee_profile_id):raise ValueError("Профиль комиссий не найден")
         if price<1 or price>10000000:raise ValueError("Некорректная цена")
+        if premium and not 1<=premium_max_rub<=10000000:raise ValueError("Укажите максимальную стоимость премиума")
         content=await image.read(10*1024*1024+1)
         if len(content)>10*1024*1024:raise ValueError("Изображение больше 10 МБ")
         if not (content.startswith(b"\x89PNG\r\n\x1a\n") or content.startswith(b"\xff\xd8\xff") or (content.startswith(b"RIFF") and content[8:12]==b"WEBP")):raise ValueError("Нужен PNG, JPEG или WebP")
-        return new_operation(db,"create",{"fields":{"title":title,"collection":collection,"pair_id":pair_id,"fee_profile_id":fee_profile_id,"price":price,"description":description,"filename":image.filename},"image":base64.b64encode(content).decode()})
+        from .manual_delivery import buyer_copy
+        return new_operation(db,"create",{"fields":{"title":buyer_copy(db,title)[:200],"collection":collection,"pair_id":pair_id,"fee_profile_id":fee_profile_id,"price":price,"description":buyer_copy(db,description),"filename":image.filename,"keep_in_sale":keep_in_sale,"premium":premium,"premium_max_rub":premium_max_rub},"image":base64.b64encode(content).decode()},expected={"cost_rub":str(premium_max_rub if premium else 0)})
 
     @app.get("/api/v1/gift-pairs")
     def pairs()->dict:return {"items":db.list("pair"),"catalog":db.list("catalog")}
@@ -441,15 +483,27 @@ def create_app(db:Database|None=None):
             if oid in revenue_orders:
                 actual_profits[oid]=actual_profits.get(oid,D(0))+(D(entry["amount_rub"]) if entry.get("type")=="revenue" else -D(entry["amount_rub"]))
         items=[]
-        for order in newest_orders(db.list("order",100000))[:1000]:
+        for order in newest_orders(db.list("order",100000)):
+            order={**order,"updated_at":order_activity_at(order,by_order.get(order["id"],[]))}
             reason=order_retry_reason(order,by_order.get(order["id"],[]),order["id"] in spent)
+            if order.get("catalog_root_credit_id") or order.get("catalog_topup_credit_id"):reason="Оплата зачислена в код каталога. Подарок выбирается в каталоге"
             if not is_nft_lot(db.get("lot",order.get("lot_id"))):reason="Автовыдача доступна только для привязанного Telegram NFT"
             profit=actual_profits.get(order["id"]) if order["id"] in revenue_orders else (order.get("snapshot") or {}).get("actual_profit_rub")
-            items.append({**order,"retry_allowed":reason is None,"retry_reason":reason,"profit_rub":str(profit) if profit is not None else None,"profit_actual":order["id"] in revenue_orders})
+            from .manual_delivery import allowed as manual_allowed
+            items.append({**order,"manual_delivery_allowed":manual_allowed(db,order),"retry_allowed":reason is None,"retry_reason":reason,"profit_rub":str(profit) if profit is not None else None,"profit_actual":order["id"] in revenue_orders})
+        from .catalog_orders import grouped_orders
+        items=newest_orders(grouped_orders(db,items,ledger))[:1000]
         return {"items":items,"operations":[{k:v for k,v in o.items() if k!="payload"} for o in operations[:300]]}
 
     @app.post("/api/v1/orders/sync")
     def sync_orders()->dict:return {"task_id":db.enqueue("orders")}
+
+    @app.post("/api/v1/orders/{id}/manual-delivered")
+    def manual_delivered(id:str)->dict:
+        from .manual_delivery import allowed
+        order=db.get("order",id)
+        if not allowed(db,order):raise ValueError("Заказ не готов к ручной выдаче. Проверьте его состояние и операции")
+        return {"task_id":db.enqueue("manual_delivery_confirm",{"order_id":id},key="manual-delivered:"+id)}
 
     @app.patch("/api/v1/orders/{id}")
     def resolve(id:str,payload:schemas.ResolveOrder)->dict:
@@ -461,6 +515,7 @@ def create_app(db:Database|None=None):
     @app.post("/api/v1/orders/{id}/process")
     def process_order(id:str)->dict:
         order=db.get("order",id)
+        if order and (order.get("catalog_root_credit_id") or order.get("catalog_topup_credit_id")):raise ValueError("Эта оплата зачислена в код каталога. Выберите подарок в каталоге")
         operations=[o for o in db.list("operation",100000) if o.get("order_id")==id or o["id"] in {id+":"+a for a in ("buy","withdraw","transfer","mark_sent")}]
         reason=order_retry_reason(order,operations,any(e.get("order_id")==id for e in db.list("ledger",100000)))
         if reason:raise ValueError(reason)

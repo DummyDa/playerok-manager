@@ -47,6 +47,47 @@ def test_transfer_exact_gift_and_recipient_without_rpc_retries(delivery, stars):
     assert calls[-1].kwargs == {"retries":1, "sleep_threshold":0}
 
 
+def test_slug_is_used_first_for_paid_transfer(delivery):
+    adapter,client=delivery
+    adapter.transfer({"slug":"Gift-1","msg_id":5,"transfer_stars":25},"buyer",123)
+    assert client.invoke.call_count==2
+    assert client.invoke.call_args.args[0].invoice.stargift.slug=="Gift-1"
+
+
+def test_slug_form_rejection_falls_back_to_message_id(delivery):
+    from pyrogram.errors import MessageIdInvalid
+    adapter,client=delivery
+    form=client.invoke.return_value
+    client.invoke.side_effect=[MessageIdInvalid(),form,SimpleNamespace()]
+    adapter.transfer({"slug":"Gift-1","msg_id":5,"transfer_stars":25},"buyer",123)
+    calls=client.invoke.call_args_list
+    assert calls[0].args[0].invoice.stargift.slug=="Gift-1"
+    assert calls[1].args[0].invoice.stargift.msg_id==5
+    assert isinstance(calls[2].args[0],raw.functions.payments.SendStarsForm)
+
+
+def test_definite_write_rejection_can_use_id_but_timeout_cannot(delivery):
+    from pyrogram.errors import MessageIdInvalid
+    adapter,client=delivery;form=client.invoke.return_value
+    saved={"slug":"Gift-1","msg_id":5,"transfer_stars":25}
+    client.invoke.side_effect=[form,MessageIdInvalid(),form,SimpleNamespace()]
+    assert adapter.transfer(saved,"buyer",123)==123
+    assert client.invoke.call_count==4
+    client.invoke.reset_mock();client.invoke.side_effect=[form,TimeoutError("unknown payment result")]
+    with pytest.raises(TimeoutError):adapter.transfer(saved,"buyer",123)
+    assert client.invoke.call_count==2
+
+
+def test_both_references_rejected_reports_both_without_payment(delivery):
+    from pyrogram.errors import MessageIdInvalid
+    adapter,client=delivery
+    client.invoke.side_effect=MessageIdInvalid()
+    with pytest.raises(ManualRequired,match="slug:.*ID сообщения:"):
+        adapter.check_transfer({"slug":"Gift-1","msg_id":5,"transfer_stars":25},"buyer",123)
+    assert client.invoke.call_count==2
+    assert all(isinstance(c.args[0],raw.functions.payments.GetPaymentForm) for c in client.invoke.call_args_list)
+
+
 @pytest.mark.parametrize("change", ["recipient", "bot", "deleted", "peer"])
 def test_invalid_recipient_never_requests_payment(delivery, change):
     adapter, client = delivery
@@ -99,6 +140,43 @@ def test_selected_transport_routes_to_kurigram(db, monkeypatch):
     saved = {"msg_id":5, "transfer_stars":25}
     assert Mrkt(db).transfer(saved, "buyer", 123) == 123
     transfer.assert_called_once_with(saved, "buyer", 123)
+
+
+def test_paid_form_preflight_uses_kurigram_without_sending_stars(db,delivery,monkeypatch):
+    import time
+    adapter,client=delivery
+    saved={"msg_id":5,"transfer_stars":25,"can_transfer_at":time.time()+7*86400}
+    result=adapter.check_transfer(saved,"buyer",123)
+    assert result=={"recipient_id":123,"stars":25,"currency":"XTR"}
+    assert client.invoke.call_count==1
+    assert isinstance(client.invoke.call_args.args[0],raw.functions.payments.GetPaymentForm)
+
+
+def test_future_date_does_not_block_valid_paid_kurigram_form(db,monkeypatch):
+    import time
+    db.configure(delivery_transport="kurigram",purchases_enabled=True,transfers_enabled=True,delivery_tested=True,stars_rub="1.26")
+    db.put("lot","l",{"pair_id":"p"})
+    db.put("order","o",{"lot_id":"l","stage":"WITHDRAWN","gift_slug":"Gift-1","recipient":"buyer","recipient_id":123,"snapshot":{"transfer_rub":"31.5"}})
+    saved={"msg_id":5,"slug":"Gift-1","transfer_stars":25,"can_transfer_at":time.time()+86400}
+    service=Service(db);service.mrkt=Mock();service.mrkt.saved.return_value=saved
+    check=Mock(return_value={"recipient_id":123,"stars":25,"currency":"XTR"})
+    monkeypatch.setattr(KurigramDelivery,"check_transfer",check)
+    service.process_order("o")
+    op=db.get("operation","o:transfer")
+    assert op["state"]=="QUEUED"
+    monkeypatch.setattr(service,"fresh_order",lambda order:{"status":"PAID"})
+    service.order_preflight(op)
+    assert check.call_count==2
+    service.mrkt.transfer.assert_not_called()
+    check.side_effect=ManualRequired("Telegram отказал в платной передаче")
+    with pytest.raises(ManualRequired):service.order_preflight(op)
+
+
+def test_paid_preflight_rejects_changed_fee_without_sending(delivery):
+    adapter,client=delivery
+    client.invoke.return_value.invoice.prices=[SimpleNamespace(amount=26)]
+    with pytest.raises(ManualRequired):adapter.check_transfer({"msg_id":5,"transfer_stars":25},"buyer",123)
+    assert client.invoke.call_count==1
 
 
 @pytest.mark.parametrize("authorized", [True, False])

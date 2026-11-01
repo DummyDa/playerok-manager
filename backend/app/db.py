@@ -8,6 +8,7 @@ from pathlib import Path
 from cryptography.fernet import Fernet
 from sqlalchemy import create_engine, event, String, Text, Integer, Float, JSON, select, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from .catalog_texts import PROMO,TOPUP,CONFIRM,SUPPORT,PAID,DELIVERED,SELECTED
 from .config import Config
 
 def uid(): return uuid.uuid4().hex
@@ -48,18 +49,23 @@ class Task(Base):
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 DEFAULTS = {
+    "catalog_selected_template": SELECTED,
+    "manual_gift_delivery": False,
     "delivery_transport": "mtproto",
     "emergency_stop": False, "repricing_enabled": False,
-    "purchases_enabled": False, "transfers_enabled": False, "promotions_enabled": False,
+    "allow_loss_sales": False, "purchases_enabled": False, "transfers_enabled": False, "promotions_enabled": False,
     "notifications_enabled": False, "delivery_tested": False,
     "stars_rub": None, "transfer_stars_reserve": 25, "purchase_limit_rub": "0",
+    "catalog_public_url": "", "funding_paid_template": "", "funding_started_at": None,
+    "catalog_promo_started_at":None,"catalog_promo_paid_template":PROMO,"catalog_topup_paid_template":TOPUP,
+    "catalog_title_template": "🎁 {collection} #{number} | {model} | ⚡ АВТОВЫДАЧА", "catalog_profit_type": "percent", "catalog_profit_value": "10", "catalog_fee_profile_id": "default",
     "ton_rate_mode": "auto", "manual_ton_rub": None,
     "daily_purchase_limit_rub": "0", "daily_promotion_limit_rub": "0",
     "quote_interval": 3600, "competitor_interval": 900, "quote_max_age": 7200,
     "description_template": "", "owner_chat_id": None, "playerok_account_id": None,
-    "buyer_paid_enabled": False, "buyer_delivered_enabled": False,
-    "buyer_paid_template": "Спасибо за оплату! Заказ {order_id} получен. Готовим заказ к исполнению.",
-    "buyer_delivered_template": "Подарок {gift} передан {recipient}! Ссылка: {gift_link}\nСпасибо за покупку!",
+    "buyer_paid_enabled": True, "buyer_delivered_enabled": True,
+    "buyer_paid_template": PAID,
+    "buyer_delivered_template": DELIVERED,
     "playerok_username": None, "bot_offset": None, "orders_baselined": False,
 }
 
@@ -103,8 +109,12 @@ class Database:
             row = s.get(Entity, (kind, str(id)))
             clean = {k: v for k, v in data.items() if k not in {"id", "updated_at"}}
             if row:
-                row.data = {**row.data, **clean} if merge else clean
-                row.updated = now()
+                merged={**row.data, **clean} if merge else clean
+                if kind!="order" or merged!=row.data:
+                    if kind=="order" and any(merged.get(k)!=row.data.get(k) for k in ("stage","reason","recipient","recipient_id","gift_slug","mrkt_gift_id","manual_hold","cancel_requested","completed_at","withdraw_at")):
+                        merged["activity_at"]=now()
+                    row.data=merged
+                    row.updated=now()
             else: s.add(Entity(kind=kind, id=str(id), data=clean))
         return self.get(kind, id)
 
@@ -119,6 +129,20 @@ class Database:
             row.data={**row.data,**data};row.updated=now()
             return True
     def configure(self, **data): return self.put("settings", "default", data)
+
+    def reserve_throttle(self, service, interval):
+        from sqlalchemy import insert,update
+        from .safety import RateLimited
+        with self.engine.connect() as conn:
+            conn.exec_driver_sql("BEGIN IMMEDIATE");table=Entity.__table__;stamp=time.time()
+            value=conn.execute(select(table.c.data).where(table.c.kind=="throttle",table.c.id==service)).scalar_one_or_none()
+            delay=max(0,(value or {}).get("next",0)-stamp)
+            if delay>2:
+                conn.rollback();raise RateLimited(f"{service}: пауза по ограничению запросов ещё {delay:.0f} секунд",stamp+delay)
+            data={**(value or {}),"next":stamp+delay+interval}
+            if value:conn.execute(update(table).where(table.c.kind=="throttle",table.c.id==service).values(data=data,updated=stamp))
+            else:conn.execute(insert(table).values(kind="throttle",id=service,data=data,updated=stamp))
+            conn.commit();return delay
 
     def secret(self, name, value=None):
         with self.tx() as s:
@@ -172,6 +196,8 @@ class Database:
         if legacy_preview:
             previous.update(emergency_stop=True,repricing_enabled=False,purchases_enabled=False,transfers_enabled=False,promotions_enabled=False)
         self.put("settings","default",{**DEFAULTS,**previous},merge=False)
+        from .message_template_migration import migrate as migrate_messages
+        migrate_messages(self)
         if not self.get("fees"):
             self.put("fees", "default", {"name": "Основные комиссии", "configured": False, "fees": []})
         from .runtime_config import import_environment

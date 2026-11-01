@@ -1,6 +1,20 @@
 from backend.app.order_dates import newest_orders, order_created_at
 
 
+def test_polling_does_not_change_order_activity(db,monkeypatch):
+    from backend.app.order_dates import order_activity_at
+    order=db.put("order","o",{"created_at":10,"stage":"DISCOVERED","playerok_status":"PAID"})
+    original=order["updated_at"]
+    monkeypatch.setattr("backend.app.db.now",lambda:100)
+    assert db.put("order","o",{"playerok_status":"PAID"})["updated_at"]==original
+    assert order_activity_at(order)==10
+    changed=db.put("order","o",{"stage":"MANUAL","reason":"Needs review"})
+    assert changed["activity_at"]==100 and order_activity_at(changed)==100
+    db.put("order","o",{"playerok_status":"SENT"})
+    assert order_activity_at(db.get("order","o"))==100
+    assert order_activity_at({"created_at":10,"updated_at":999},[{"completed_at":20}])==20
+
+
 def test_orders_sort_by_creation_not_last_sync_or_state():
     orders=[{"id":"new","created_at":"2026-10-29T12:00:00Z","updated_at":1,"stage":"COMPLETE"},
             {"id":"old","created_at":"2026-10-28T12:00:00Z","updated_at":9999999999,"stage":"PAID"}]

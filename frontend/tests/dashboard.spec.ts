@@ -9,6 +9,240 @@ const connections = { items: [{ id: "playerok", configured: true, status: "CONNE
 const preview = { id: "preview", state: "PREVIEW", action: "promotion", payload: { lot_id: lotId }, expected: { cost_rub: "25", balance: 100 } };
 const events = [{ id: "one", title: "Лоты синхронизированы", detail: "46 объявлений обновлены", action: "sync", level: "INFO", updated_at: Date.now() / 1000 }];
 
+test("manual gift delivery requires explicit recipient confirmation",async({page})=>{
+  await mock(page);
+  let confirmations=0;
+  const delivery={id:"manual-child",gift_slug:"SnoopDogg-1",recipient:"buyer",sale_rub:"500",stage:"AWAITING_MANUAL_DELIVERY",manual_delivery_allowed:true};
+  const group={id:"root",catalog_group:true,title:"Заказ каталога",stage:delivery.stage,paid_rub:"500",balance_rub:"0",delivery_count:0,deliveries:[delivery],payments:[]};
+  await page.route("**/api/v1/orders",route=>route.fulfill({json:{items:[group],operations:[]}}));
+  await page.route("**/api/v1/orders/manual-child/manual-delivered",route=>{confirmations++;return route.fulfill({json:{task_id:"manual-task"}});});
+  await page.route("**/api/v1/tasks/manual-task",route=>route.fulfill({json:{state:"COMPLETE",result:{operation_id:"manual-mark"}}}));
+  await page.route("**/api/v1/operations/manual-mark",route=>route.fulfill({json:{state:"COMPLETE"}}));
+  await page.goto("/orders");
+  await page.getByRole("button",{name:"Подробнее",exact:true}).click();
+  await page.getByRole("button",{name:"Выдан",exact:true}).click();
+  const confirm=page.getByRole("dialog",{name:"Подтвердить ручную выдачу",exact:true});
+  await expect(confirm.getByText("SnoopDogg-1",{exact:true})).toBeVisible();
+  await expect(confirm.getByText("@buyer",{exact:true})).toBeVisible();
+  expect(confirmations).toBe(0);
+  await confirm.getByRole("button",{name:"Да, подарок передан",exact:true}).click();
+  await expect(confirm).toHaveCount(0);
+  expect(confirmations).toBe(1);
+});
+
+test("discontinued listing can be republished from other lots after confirmation",async({page})=>{
+  await mock(page);
+  const op={id:"relist",action:"relist",state:"PREVIEW",payload:{lot_id:lotId,title:lot.title,price:800},expected:{cost_rub:"0"}};
+  await page.route("**/api/v1/lots",route=>route.fulfill({json:{items:[{...lot,status:"DISCONTINUED"}]}}));
+  await page.route(`**/api/v1/lots/${lotId}/relist-preview`,route=>route.fulfill({json:op}));
+  await page.route("**/api/v1/operations/execute",route=>route.fulfill({json:{...op,state:"QUEUED"}}));
+  await page.route("**/api/v1/operations/relist",route=>route.fulfill({json:{...op,state:"COMPLETE"}}));
+  await page.goto("/lots");
+  await page.getByRole("button",{name:"Остальные",exact:true}).click();
+  await page.getByRole("button",{name:"Выставить повторно",exact:true}).click();
+  const dialog=page.getByRole("dialog",{name:"Выставить лот повторно"});
+  await expect(dialog.getByText(/Бесплатная публикация без премиума/)).toBeVisible();
+  await dialog.getByRole("button",{name:"Подтвердить",exact:true}).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText("Операция выполнена",{exact:true})).toBeVisible();
+});
+
+test("relisting can quote premium before explicit paid confirmation",async({page})=>{
+  await mock(page);
+  const free={id:"free-relist",action:"relist",state:"PREVIEW",payload:{lot_id:lotId,title:lot.title,price:800,premium:false},expected:{cost_rub:"0"}};
+  const premium={...free,id:"paid-relist",payload:{...free.payload,premium:true},expected:{cost_rub:"25",balance:100,status_id:"premium"}};
+  let executed="";
+  await page.route("**/api/v1/settings",route=>route.fulfill({json:{...settings,promotions_enabled:true}}));
+  await page.route("**/api/v1/lots",route=>route.fulfill({json:{items:[{...lot,status:"SOLD"}]}}));
+  await page.route(`**/api/v1/lots/${lotId}/relist-preview`,route=>route.fulfill({json:route.request().postDataJSON()?.premium?{task_id:"quote-premium"}:free}));
+  await page.route("**/api/v1/tasks/quote-premium",route=>route.fulfill({json:{state:"COMPLETE",result:premium}}));
+  await page.route("**/api/v1/operations/execute",route=>{executed=route.request().postDataJSON().operation_id;return route.fulfill({json:{state:"QUEUED"}});});
+  await page.route("**/api/v1/operations/paid-relist",route=>route.fulfill({json:{...premium,state:"COMPLETE"}}));
+  await page.goto("/lots");
+  await page.getByRole("button",{name:"Остальные",exact:true}).click();
+  await page.getByRole("button",{name:"Выставить повторно",exact:true}).click();
+  const dialog=page.getByRole("dialog",{name:"Выставить лот повторно"});
+  await dialog.getByRole("checkbox",{name:/Выставить с премиумом/}).check();
+  await expect(dialog.getByText(/Публикация с премиумом: 25/)).toBeVisible();
+  expect(executed).toBe("");
+  await dialog.getByRole("button",{name:"Подтвердить",exact:true}).click();
+  await expect(dialog).toHaveCount(0);
+  expect(executed).toBe("paid-relist");
+});
+
+test("profit calculator is a separate owner tab and submits saved fee profile",async({page})=>{
+  await mock(page);
+  let input:any;
+  await page.route("**/api/v1/calculator",route=>{input=route.request().postDataJSON();return route.fulfill({json:{profit_rub:"61.71",sale_rub:"635",purchase_rub:"401",fees_rub:"127.79",transfer_rub:"31.5",promotion_rub:"13",break_even_rub:"562.06",margin_percent:"9.718",ton_rub:"100",stars_rub:"1.26",transfer_stars:25,fees:[{name:"Playerok",amount_rub:"63.5"}]}});});
+  await page.goto("/calculator");
+  await expect(page.getByRole("heading",{name:"Калькулятор",exact:true})).toBeVisible();
+  await page.getByLabel("Цена продажи, ₽",{exact:true}).fill("635");
+  await page.getByLabel("Стоимость закупки",{exact:true}).fill("4.01");
+  await page.getByRole("checkbox",{name:/Учитывать премиум/}).check();
+  await page.getByLabel("Стоимость одного поднятия, ₽").fill("13");
+  await page.getByRole("button",{name:"Рассчитать прибыль"}).click();
+  await expect(page.getByText("61,71 ₽",{exact:true})).toBeVisible();
+  expect(input).toMatchObject({fee_profile_id:"default",purchase:"4.01",sale_rub:"635",premium_enabled:true,premium_rub:"13"});
+});
+
+test("loss sales require explicit saved owner setting",async({page})=>{
+  const writes=await mock(page);
+  await page.goto("/settings");
+  const toggle=page.getByRole("checkbox",{name:/Разрешать выдачу в убыток/});
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await page.getByRole("button",{name:"Сохранить настройки",exact:true}).click();
+  await expect.poll(()=>writes.some(w=>w.path==="/settings"&&w.body.allow_loss_sales===true)).toBe(true);
+});
+
+test("interrupted listing offers existing draft publication",async({page})=>{
+  await mock(page);
+  await page.route("**/api/v1/lots/recoveries",route=>route.fulfill({json:{items:[{id:"interrupted",title:"Новый подарок",error:"createItem: timeout"}]}}));
+  await page.route("**/api/v1/lots/recoveries/interrupted/preview",route=>route.fulfill({json:{task_id:"resume-task"}}));
+  await page.route("**/api/v1/tasks/resume-task",route=>route.fulfill({json:{state:"COMPLETE",result:{id:"resume",action:"create",state:"PREVIEW",payload:{fields:{title:"Новый подарок",resume_item_id:"draft",premium:false}},expected:{}}}}));
+  await page.goto("/lots");
+  await page.getByRole("button",{name:"Продолжить публикацию",exact:true}).click();
+  await expect(page.getByRole("dialog",{name:"Подтвердить изменения"})).toBeVisible();
+  await expect(page.getByText("Обычная публикация без премиума.",{exact:true})).toBeVisible();
+});
+
+test("listing change shows Playerok refusal after queue",async({page})=>{
+  await mock(page);
+  const op={id:"update-price",state:"PREVIEW",action:"update",payload:{lot_id:lotId,changes:{price:540}},expected:{}};
+  await page.route(`**/api/v1/lots/${lotId}`,route=>route.fulfill({json:lot}));
+  await page.route(`**/api/v1/lots/${lotId}/edit-preview`,route=>route.fulfill({json:op}));
+  await page.route("**/api/v1/operations/execute",route=>route.fulfill({json:{...op,state:"QUEUED"}}));
+  await page.route("**/api/v1/operations/update-price",route=>route.fulfill({json:{...op,state:"UNKNOWN",error:"Минимальная скидка — 5%"}}));
+  await page.goto("/lots");
+  await page.getByRole("button",{name:`Редактировать ${lot.title}`,exact:true}).click();
+  const edit=page.getByRole("dialog",{name:"Редактировать объявление"});
+  await edit.getByLabel("Цена, ₽",{exact:true}).fill("540");
+  await edit.getByRole("button",{name:"Проверить изменения"}).click();
+  await page.getByRole("button",{name:"Подтвердить",exact:true}).click();
+  await expect(page.getByText("Минимальная скидка — 5%",{exact:true})).toBeVisible();
+  await expect(page.getByText("Операция выполнена",{exact:true})).toHaveCount(0);
+});
+
+test("catalog order combines payments balance and deliveries in one live card",async({page})=>{
+  await mock(page);
+  const group:any={id:"root",catalog_group:true,title:"Заказ каталога · Snoop Dogg",stage:"AWAITING_SELECTION",sale_rub:"1200",paid_rub:"1200",manual_credit_rub:"0",adjustment_rub:"0",balance_rub:"100",reserved_rub:"0",refunded_rub:"0",recipient:"buyer",delivery_count:2,profit_rub:"300",totals:{revenue:"1100",purchase:"800",transfer:"0",fees:"0",promotion:"0"},payments:[{id:"original",kind:"ORIGINAL",accepted:true,status:"SENT",amount_rub:"1000"},{id:"extra",accepted:true,status:"PAID",amount_rub:"200"}],deliveries:[{id:"child",gift_slug:"SnoopDogg-1",recipient:"buyer",sale_rub:"700",stage:"COMPLETE",retry_allowed:false}]};
+  await page.route("**/api/v1/orders",route=>route.fulfill({json:{items:[group],operations:[]}}));
+  await page.goto("/orders");
+  await page.getByRole("button",{name:"Подробнее",exact:true}).click();
+  const dialog=page.getByRole("dialog",{name:"Заказ каталога",exact:true});
+  await expect(dialog.getByText("Исходная оплата",{exact:true})).toBeVisible();
+  await expect(dialog.getByText("Доплата",{exact:true})).toBeVisible();
+  await expect(dialog.getByText("SnoopDogg-1",{exact:true})).toBeVisible();
+  await expect(dialog.getByText("Прибыль учтённых выдач",{exact:true})).toBeVisible();
+  await expect(dialog.getByLabel("Комментарий ручной обработки")).toHaveCount(0);
+  group.stage="COMPLETE";
+  await expect(dialog.locator(".order-title").getByText("Завершён",{exact:true})).toBeVisible({timeout:10000});
+  await page.setViewportSize({width:390,height:844});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
+  await page.screenshot({path:"../data/qa/catalog-order.png",fullPage:true});
+});
+
+test("new listing keep in sale is off by default",async({page})=>{
+  await mock(page);await page.goto("/lots");
+  await page.getByRole("button",{name:"Новый лот",exact:true}).click();
+  const dialog=page.getByRole("dialog",{name:"Новое объявление"});
+  const toggle=dialog.getByRole("checkbox",{name:/Оставлять в продаже/});
+  await expect(toggle).not.toBeChecked();await toggle.check();await expect(toggle).toBeChecked();
+  await dialog.locator("header").getByRole("button",{name:"Закрыть",exact:true}).click();
+  await page.getByRole("button",{name:"Новый лот",exact:true}).click();
+  await expect(toggle).not.toBeChecked();
+});
+
+test("catalog profit settings save without premium",async({page})=>{
+  const writes=await mock(page);
+  await page.goto("/catalog");
+  await page.getByLabel("Прибыль каталога",{exact:true}).fill("11");
+  await page.getByLabel("Единица прибыли каталога",{exact:true}).selectOption("percent");
+  await expect(page.getByLabel("Премиум на продажу в каталоге, ₽",{exact:true})).toHaveCount(0);
+  await page.getByRole("button",{name:"Сохранить настройки каталога",exact:true}).click();
+  await expect.poll(()=>writes.filter(w=>w.path==="/settings").length).toBe(1);
+  expect(writes.find(w=>w.path==="/settings")?.body).toMatchObject({catalog_profit_value:"11",catalog_profit_type:"percent"});
+});
+
+test("catalog has a separate navigation tab and saves its description",async({page})=>{
+  const writes=await mock(page);
+  await page.goto("/settings");
+  await expect(page.getByRole("heading",{name:"Коды каталога",exact:true})).toHaveCount(0);
+  await expect(page.getByLabel("Прибыль каталога",{exact:true})).toHaveCount(0);
+  await page.getByRole("link",{name:"Каталог",exact:true}).click();
+  await expect(page).toHaveURL(/\/catalog$/);
+  await expect(page.getByRole("heading",{name:"Каталог",level:1,exact:true})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"Коды каталога",exact:true})).toBeVisible();
+  await page.getByLabel("Шаблон описания новых лотов",{exact:true}).fill("Подарок {collection} #{number}");
+  await page.getByRole("button",{name:"Сохранить настройки каталога",exact:true}).click();
+  await expect.poll(()=>writes.filter(w=>w.path==="/settings").length).toBe(1);
+  expect(writes.find(w=>w.path==="/settings")?.body).toEqual({description_template:"Подарок {collection} #{number}"});
+});
+
+test("catalog payment messages and local catalog address can be edited",async({page})=>{
+  const writes=await mock(page);await page.goto("/catalog");
+  await page.getByLabel("Адрес каталога для покупателей",{exact:true}).fill("http://127.0.0.1:3180");
+  await page.getByLabel("После оплаты рекламного лота",{exact:true}).fill("Получено {amount} ₽. {url} Код: {code}");
+  await page.getByLabel("После оплаты доплаты",{exact:true}).fill("Доплата {amount} ₽ получена");
+  await page.getByRole("button",{name:"Сохранить настройки каталога",exact:true}).click();
+  await expect.poll(()=>writes.filter(w=>w.path==="/settings").length).toBe(1);
+  expect(writes.find(w=>w.path==="/settings")?.body).toEqual({catalog_public_url:"http://127.0.0.1:3180",catalog_promo_paid_template:"Получено {amount} ₽. {url} Код: {code}",catalog_topup_paid_template:"Доплата {amount} ₽ получена"});
+});
+
+test("catalog codes can be created, filtered, edited, logged and deleted",async({page})=>{
+  await mock(page);
+  let code:any=null;
+  const events:any[]=[];
+  await page.route("**/api/v1/catalog-codes**",async route=>{
+    const req=route.request(),url=new URL(req.url());
+    if(url.pathname.endsWith("/events"))return route.fulfill({json:{items:events}});
+    if(req.method()==="POST"){
+      const data=req.postDataJSON();expect(data).toEqual({amount_rub:"1500",recipient:"buyer",lot_id:null});
+      code={id:"test-code",code:"ABCD-EFGH",valid:true,state:"AWAITING_SELECTION",recipient:data.recipient,paid_rub:data.amount_rub,balance_rub:data.amount_rub,collection:"Liberty Figure",created_at:Date.now()/1000,locked:false,url:"http://127.0.0.1:3180/#code=ABCD-EFGH"};
+      return route.fulfill({json:code});
+    }
+    if(req.method()==="PATCH"){
+      const body=req.postDataJSON();expect(body).toEqual({balance_rub:"500",note:"Исправление"});
+      events.push({id:"event",at:Date.now()/1000,action:"BALANCE_CHANGED",before_rub:"1500",after_rub:body.balance_rub,note:body.note});
+      code={...code,balance_rub:body.balance_rub};return route.fulfill({json:code});
+    }
+    if(req.method()==="DELETE"){code={...code,valid:false,state:"DELETED"};return route.fulfill({json:code});}
+    const status=url.searchParams.get("status");
+    return route.fulfill({json:{items:code && (status==="all" || code.valid===(status==="valid"))?[code]:[],counts:{all:code?1:0,valid:code?.valid?1:0,invalid:code && !code.valid?1:0}}});
+  });
+  await page.goto("/catalog");
+  const panel=page.locator("section.panel").filter({has:page.getByRole("heading",{name:"Коды каталога",exact:true})});
+  await panel.getByLabel("Сумма кода, ₽").fill("1500");
+  await panel.getByLabel("Telegram-получатель кода").fill("@buyer");
+  await expect(panel.getByRole("button",{name:"Создать код",exact:true})).toBeEnabled();
+  await panel.getByRole("button",{name:"Создать код",exact:true}).click();
+  await expect(panel.getByText("Код создан",{exact:true})).toBeVisible();
+  await panel.getByRole("button",{name:"Баланс",exact:true}).click();
+  const edit=page.getByRole("dialog",{name:"Изменить баланс кода"});
+  await edit.getByLabel("Новый доступный баланс, ₽").fill("500");
+  await edit.getByLabel("Комментарий изменения").fill("Исправление");
+  await edit.getByRole("button",{name:"Сохранить баланс"}).click();
+  await expect(panel.getByText("Баланс: 500 ₽",{exact:true})).toBeVisible();
+  await panel.getByRole("button",{name:"Логи",exact:true}).click();
+  const logs=page.getByRole("dialog",{name:"Логи кода"});
+  await expect(logs.getByText("Баланс изменён владельцем",{exact:true})).toBeVisible();
+  await expect(logs.getByText("Исправление",{exact:true})).toBeVisible();
+  await logs.getByRole("button",{name:"Закрыть",exact:true}).last().click();
+  await panel.screenshot({path:"../data/qa/catalog-codes-desktop.png"});
+  await panel.getByRole("button",{name:"Удалить",exact:true}).click();
+  await page.getByRole("button",{name:"Удалить и заблокировать",exact:true}).click();
+  await panel.getByLabel("Состояние кодов").selectOption("invalid");
+  await expect(panel.getByText("Удалён",{exact:true})).toBeVisible();
+  await expect(panel.getByRole("button",{name:"Баланс",exact:true})).toBeDisabled();
+  await panel.getByLabel("Состояние кодов").selectOption("valid");
+  await expect(panel.getByText("Кодов пока нет",{exact:true})).toBeVisible();
+  await page.setViewportSize({width:390,height:844});
+  await panel.getByLabel("Состояние кодов").selectOption("all");
+  await expect.poll(()=>page.locator(".sidebar").evaluate(el=>el.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
+  await panel.screenshot({path:"../data/qa/catalog-codes-mobile.png",animations:"disabled"});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+});
+
 for(const scheme of ["dark","light"] as const) test(`lot tabs and search match ${scheme} theme`, async ({ page }) => {
   await mock(page);
   await page.emulateMedia({colorScheme:scheme});
@@ -352,6 +586,31 @@ test("secret fields stay empty and account changes require pausing active tradin
   await expect(page.getByRole("button", { name: "Сохранить ключи", exact: true })).toBeDisabled();
 });
 
+test("Telegram drafts can be entered during trading and saved only after explicit pause",async({page})=>{
+  await mock(page);
+  let current={...settings,purchases_enabled:true};const writes:any[]=[];
+  await page.route("**/api/v1/settings",route=>route.fulfill({json:current}));
+  await page.route("**/api/v1/automation/stop",route=>{
+    writes.push({path:"stop"});current={...current,emergency_stop:true};return route.fulfill({json:current});
+  });
+  await page.route("**/api/v1/connections/config",route=>{
+    if(route.request().method()==="PATCH")writes.push({path:"keys",body:route.request().postDataJSON()});
+    return route.fulfill({json:{api_id:"12345",api_hash_configured:true,user_session_configured:true}});
+  });
+  await page.goto("/settings");
+  await page.getByLabel("Telegram API ID",{exact:true}).fill("54321");
+  await page.getByLabel("Telegram API Hash",{exact:true}).fill("0123456789abcdef0123456789abcdef");
+  await page.getByLabel("Номер Telegram",{exact:true}).fill("+79990000001");
+  await expect(page.getByRole("button",{name:"Сохранить ключи",exact:true})).toBeDisabled();
+  await expect(page.getByRole("button",{name:"Получить код",exact:true})).toBeDisabled();
+  expect(writes).toEqual([]);
+  await page.getByRole("button",{name:"Приостановить автоматизацию",exact:true}).click();
+  await expect(page.getByRole("button",{name:"Сохранить ключи",exact:true})).toBeEnabled();
+  await expect(page.getByLabel("Номер Telegram",{exact:true})).toHaveValue("+79990000001");
+  await page.getByRole("button",{name:"Сохранить ключи",exact:true}).click();
+  await expect.poll(()=>writes).toEqual([{path:"stop"},{path:"keys",body:{api_id:54321,api_hash:"0123456789abcdef0123456789abcdef"}}]);
+});
+
 test("Chrome delivery setup saves the transport and shows a one-time pairing code", async ({ page }) => {
   await mock(page);
   let current = { ...settings, delivery_transport: "mtproto", delivery_tested: true };
@@ -606,7 +865,7 @@ test("first setup screen does not expose imported secrets", async ({ page }) => 
 
 test("all sections render without browser errors", async ({ page }) => {
   await mock(page); const errors: string[] = []; page.on("pageerror", e => errors.push(e.message));
-  const pages: Record<string, string> = { "": "Обзор", lots: "Лоты", orders: "Заказы", gifts: "NFT Gifts", pricing: "Автоцены", fees: "Комиссии", competitors: "Конкуренты", promotions: "Поднятия", finance: "Финансы", history: "История", settings: "Настройки" };
+  const pages: Record<string, string> = { "": "Обзор", lots: "Лоты", orders: "Заказы", gifts: "NFT Gifts", catalog: "Каталог", pricing: "Автоцены", fees: "Комиссии", competitors: "Конкуренты", promotions: "Поднятия", finance: "Финансы", history: "История", settings: "Настройки" };
   for (const [path, title] of Object.entries(pages)) {
     await page.goto("/" + path, { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("heading", { name: title, level: 1, exact: true })).toBeVisible();
@@ -760,6 +1019,9 @@ test("new lot can create and select a pair inline without losing its fields", as
   await expect(dialog.getByLabel("Коллекция — модель")).toHaveValue(added.id);
   await expect(dialog.getByLabel("Название", { exact: true })).toHaveValue("Мой новый лот");
   await expect(dialog.getByLabel("Цена, ₽", { exact: true })).toHaveValue("1500");
+    await dialog.getByRole("checkbox",{name:/Опубликовать с премиумом/}).click();
+    await expect(dialog.getByLabel("Максимальная стоимость премиума, ₽")).toBeVisible();
+    await dialog.getByLabel("Максимальная стоимость премиума, ₽").fill("50");
   await expect(page).toHaveURL(/\/lots$/);
   expect(posts).toBe(1);
 });

@@ -1,0 +1,66 @@
+name: playerok
+x-backend: &backend
+  image: playerok-backend:local
+  build:
+    context: .
+    dockerfile: Dockerfile
+  network_mode: host
+  restart: unless-stopped
+  init: true
+  stop_grace_period: 120s
+  environment:
+    TZ: Europe/Volgograd
+    CATALOG_TRUSTED_PROXY: 127.0.0.1,::1
+  volumes:
+    - ./data:/app/data
+    - ./catalog/data:/app/catalog/data
+    - ./.env:/app/.env:ro
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+services:
+  api:
+    <<: *backend
+    command: ["sh","-c","python scripts/migrate.py && exec python scripts/run_api.py"]
+    healthcheck:
+      test: ["CMD","python","-c","import urllib.request; urllib.request.urlopen('http://127.0.0.1:8101/api/v1/health',timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+  worker:
+    <<: *backend
+    command: ["python","-m","backend.app.worker"]
+    depends_on:
+      api:
+        condition: service_healthy
+  catalog:
+    <<: *backend
+    command: ["python","catalog/server.py"]
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD","python","-c","import urllib.request; urllib.request.urlopen('http://127.0.0.1:3180/api/health',timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+  dashboard:
+    image: playerok-dashboard:local
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    network_mode: host
+    restart: unless-stopped
+    init: true
+    depends_on:
+      api:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

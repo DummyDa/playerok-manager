@@ -59,7 +59,14 @@ class KurigramDelivery:
                     await client.disconnect()
         return asyncio.run(run())
 
+    def check_transfer(self, saved, recipient, expected_recipient_id):
+        """Request a payment form without paying or transferring the gift."""
+        return self._transfer(saved,recipient,expected_recipient_id,check_only=True)
+
     def transfer(self, saved, recipient, expected_recipient_id):
+        return self._transfer(saved,recipient,expected_recipient_id)
+
+    def _transfer(self, saved, recipient, expected_recipient_id,check_only=False):
         gate(self.db, "transfers")
 
         async def send(client):
@@ -72,20 +79,38 @@ class KurigramDelivery:
             peer = await client.resolve_peer(user.id)
             if not isinstance(peer, raw.types.InputPeerUser) or peer.user_id != expected_recipient_id:
                 raise ManualRequired("Изменился ID Telegram получателя")
-            ref = raw.types.InputSavedStarGiftUser(msg_id=saved["msg_id"])
-            # Raw calls keep fee checks under our control. transfer_gift() can
-            # automatically pay a newly requested fee without an application cap.
-            if saved["transfer_stars"]:
-                invoice = raw.types.InputInvoiceStarGiftTransfer(stargift=ref, to_id=peer)
-                form = await client.invoke(raw.functions.payments.GetPaymentForm(invoice=invoice), retries=1)
-                if form.invoice.currency != "XTR" or sum(p.amount for p in form.invoice.prices) != saved["transfer_stars"]:
-                    raise ManualRequired("Стоимость передачи изменилась")
-                request = raw.functions.payments.SendStarsForm(form_id=form.form_id, invoice=invoice)
-            else:
-                request = raw.functions.payments.TransferStarGift(stargift=ref, to_id=peer)
-            gate(self.db, "transfers")
-            # Kurigram counts attempts, so 1 means one send, without RPC retries.
-            await client.invoke(request, retries=1, sleep_threshold=0)
-            return user.id
+            from pyrogram.errors import BadRequest
+            refs=[]
+            if saved.get("slug"):
+                refs.append(("slug",raw.types.InputSavedStarGiftSlug(slug=saved["slug"])))
+            refs.append(("ID сообщения",raw.types.InputSavedStarGiftUser(msg_id=saved["msg_id"])))
+            errors=[]
+            for index,(label,ref) in enumerate(refs):
+                phase="form"
+                try:
+                    if saved["transfer_stars"]:
+                        invoice=raw.types.InputInvoiceStarGiftTransfer(stargift=ref,to_id=peer)
+                        form=await client.invoke(raw.functions.payments.GetPaymentForm(invoice=invoice),retries=1)
+                        if form.invoice.currency!="XTR" or sum(p.amount for p in form.invoice.prices)!=saved["transfer_stars"]:
+                            raise ManualRequired("Стоимость передачи изменилась")
+                        request=raw.functions.payments.SendStarsForm(form_id=form.form_id,invoice=invoice)
+                    else:
+                        request=raw.functions.payments.TransferStarGift(stargift=ref,to_id=peer)
+                    if check_only:return {"recipient_id":user.id,"stars":saved["transfer_stars"],"currency":"XTR"}
+                    gate(self.db,"transfers")
+                    phase="send"
+                    # No RPC retries. A transport timeout after this point must
+                    # never switch references and submit another payment.
+                    await client.invoke(request,retries=1,sleep_threshold=0)
+                    return user.id
+                except BadRequest as exc:
+                    text=str(exc)
+                    # Any rejected read-only form can try the other reference.
+                    # After a write, only explicit non-execution errors qualify.
+                    rejected=any(code in text.upper() for code in ("MESSAGE_ID_INVALID","STARGIFT_INVALID","STARGIFT_NOT_FOUND","STARGIFT_TRANSFER_TOO_EARLY","SAVED_ID_EMPTY","SAVED_ID_INVALID","STARGIFT_TRANSFER_UNAVAILABLE"))
+                    if phase=="send" and not rejected:raise
+                    errors.append(label+": "+text[:1000])
+                    if index+1<len(refs):continue
+                    raise ManualRequired("Telegram отклонил передачу. Нужна ручная обработка. "+"; ".join(errors)) from exc
 
         return self.telegram(send)

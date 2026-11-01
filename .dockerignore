@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+**/.venv
+**/node_modules
+**/.next
+**/data
+**/__pycache__
+**/.pytest_cache
+**/test-results
+**/playwright-report
+**/*.sqlite*
+**/*.session*
+**/*.key
+**/*.pem
+**/*.log
+playerok-browser

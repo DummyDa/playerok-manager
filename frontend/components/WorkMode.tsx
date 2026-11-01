@@ -6,10 +6,12 @@ import { AlertTriangle, TrendingUp, Crown, Hexagon, Send, ClipboardCheck, Bot } 
 import { api } from "../lib/api";
 
 const modes = [
+  { key: "manual_gift_delivery", title: "Ручная выдача подарков", description: "Бот закупает и выводит NFT. Передайте подарок сами и нажмите «Выдан» в заказе: бот закроет выдачу и отметит связанные сделки на Playerok.", icon: ClipboardCheck },
   { key: "emergency_stop", title: "Аварийная остановка", description: "Останавливает новые торговые действия. Уже отправленные запросы требуют сверки.", icon: AlertTriangle },
   { key: "repricing_enabled", title: "Автоматическое изменение цен", description: "Обновляет цены активных лотов по вашим правилам и целевой прибыли.", icon: TrendingUp },
   { key: "promotions_enabled", title: "Платные поднятия", description: "Разрешает платные поднятия для увеличения видимости лотов.", icon: Crown },
   { key: "purchases_enabled", title: "Покупка NFT на MRKT", description: "Разрешает закупку подарков для оплаченных заказов с проверкой прибыли и лимитов.", icon: Hexagon },
+  { key: "allow_loss_sales", title: "Разрешать выдачу в убыток", description: "Разрешает закупку и выдачу при отрицательной фактической прибыли. Убыток учитывается в финансах. По умолчанию выключено.", icon: AlertTriangle },
   { key: "transfers_enabled", title: "Передача NFT покупателям", description: "Разрешает передачу купленных NFT указанным получателям.", icon: Send },
   { key: "delivery_tested", title: "Выдача отдельно протестирована мной", description: "Подтверждение владельца после сквозного теста. Одна полученная форма оплаты не подтверждает успешную передачу.", icon: ClipboardCheck },
   { key: "notifications_enabled", title: "Telegram-уведомления и команды", description: "Сначала остановите старый проект. Два экземпляра одного бота конфликтуют.", icon: Bot },

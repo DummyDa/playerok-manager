@@ -1,0 +1,32 @@
+/* Cold graphite and ice-blue palette from the visual reference. */
+:root{--bg:#070d13;--surface:#0c1620;--line:#203044;--text:#f1f5fc;--muted:#a3b9d2;--accent:#b9d3f2;--ink:#102137;--soft:#17283c}
+body:not(.light-theme){background:radial-gradient(ellipse at 50% 0,#142a4118,transparent 64%),#070d13}
+body:not(.light-theme) .header{background:linear-gradient(180deg,#0c1520,#080f17);border-color:#1c2c3e}
+body:not(.light-theme) .filter-panel{background:linear-gradient(90deg,#080f17,#0a131c);border-color:#1a2a3d}
+body:not(.light-theme) .search,body:not(.light-theme) .sort-label,body:not(.light-theme) .collection-search,body:not(.light-theme) form select,body:not(.light-theme) .price-inputs input,body:not(.light-theme) #gift-number-filter{background:linear-gradient(135deg,#111d2a,#0c151f);border-color:#24354a;color:#e7f0fc}
+body:not(.light-theme) input::placeholder{color:#90a8c3}
+body:not(.light-theme) .search>span{background:#1b2b40;color:#b8cbe2}
+body:not(.light-theme) .icon-button{background:linear-gradient(135deg,#152233,#0d1723);border-color:#263a51;color:#b4cbe6}
+body:not(.light-theme) .icon-button[aria-pressed=true]{background:linear-gradient(135deg,#334d6c,#20354f);border-color:#b6cce7;box-shadow:inset 0 1px 0 #e2eeff24;color:#f1f6ff}
+body:not(.light-theme) .gift-card{background:linear-gradient(145deg,#111c29,#09131e);border-color:#23364a}
+body:not(.light-theme) .gift-card:hover{border-color:#87a9d0;box-shadow:0 0 18px #75aaf610}
+body:not(.light-theme) .gift-art{background:linear-gradient(160deg,#06101bd6,#0712219c),radial-gradient(ellipse at 50% 45%,var(--c1),var(--c2))}
+body:not(.light-theme) .gift-art:after{background:linear-gradient(0deg,#050c1740,transparent 50%)}
+body:not(.light-theme) .gift-art:before{opacity:.06;filter:grayscale(1) sepia(.2) hue-rotate(165deg)}
+body:not(.light-theme) .gift-model,body:not(.light-theme) .gift-price small{color:#acc2dd}
+body:not(.light-theme) .collection-chip{color:#a9bfd9}
+body:not(.light-theme) .collection-chip.active{color:#eff5ff}
+body:not(.light-theme) .collection-chip.active:before{background:linear-gradient(135deg,#d9e9fc,#9bbce4);border-color:#c4dbf6;color:#132940}
+body:not(.light-theme) .apply-button{background:linear-gradient(135deg,#c7dcf5,#91afd5);color:#0b1c31;box-shadow:inset 0 1px 0 #fff5}
+body:not(.light-theme) .hero{background:radial-gradient(ellipse at 75% 50%,#244b771c,transparent 58%);border-color:#1b2b3e}
+body:not(.light-theme) .hero h1 span{color:#8fa8c6}
+body:not(.light-theme) .hero-description,body:not(.light-theme) .hero-note,body:not(.light-theme) .hero .eyebrow{color:#a0b5cf}
+body:not(.light-theme) .hero-link{color:#d6e6fb;border-color:#496481}
+body:not(.light-theme) .showcase{background:linear-gradient(145deg,#2c405c99,#0a1526f2 70%);border-color:#7b9cbd66}
+body:not(.light-theme) .showcase-img{box-shadow:inset 0 0 20px #102b4955}
+body:not(.light-theme) .hero-art:before{background:radial-gradient(ellipse,#8ebcf85c,transparent 69%)}
+body:not(.light-theme) .orbit,body:not(.light-theme) .orbit:after{border-color:#759bcb1c}
+body:not(.light-theme) dialog{background:#0c1725;border-color:#355172}
+body:not(.light-theme) dialog::backdrop{background:#020710d9}
+body:not(.light-theme) .detail-art{background:linear-gradient(145deg,#061325b8,#07132177),radial-gradient(ellipse at 50% 40%,var(--c1),var(--c2))}
+body:not(.light-theme) .toast{background:#162941;border-color:#4e709a;color:#d6e8ff}

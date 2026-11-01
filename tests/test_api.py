@@ -11,6 +11,26 @@ def authenticate(client):
     assert r.status_code==200
     return {"X-CSRF-Token":r.json()["csrf"]}
 
+
+def test_manual_delivery_setting_and_endpoint_require_owner_auth(db,client):
+    assert client.post("/api/v1/orders/missing/manual-delivered").status_code==401
+    headers=authenticate(client)
+    assert client.post("/api/v1/orders/missing/manual-delivered").status_code==403
+    assert client.patch("/api/v1/settings",headers=headers,json={"manual_gift_delivery":True}).status_code==200
+    assert db.settings()["manual_gift_delivery"] is True
+    assert client.post("/api/v1/orders/missing/manual-delivered",headers=headers).status_code==400
+
+
+@pytest.mark.parametrize("status",["SOLD","DISCONTINUED"])
+def test_sold_lot_relist_preview_is_free_and_excludes_catalog_temporary(db,client,status):
+    headers=authenticate(client)
+    db.put("lot","sold",{"status":status,"title":"Gift","price":600})
+    r=client.post("/api/v1/lots/sold/relist-preview",headers=headers)
+    assert r.status_code==200 and r.json()["action"]=="relist"
+    assert r.json()["expected"]["cost_rub"]=="0"
+    db.put("lot","sold",{"lot_type":"TEMPORARY"})
+    assert client.post("/api/v1/lots/sold/relist-preview",headers=headers).status_code==400
+
 def test_auth_required_and_csrf_enforced(client):
     assert client.get("/api/v1/settings").status_code==401
     headers=authenticate(client)
@@ -139,9 +159,10 @@ def test_manual_retry_never_resets_existing_purchase_evidence(db,client,evidence
     assert db.get("order","o")["manual_hold"] is True
 
 def test_https_origin_is_exact_and_keeps_csrf(db):
+    with TestClient(create_app(db)) as local:authenticate(local)
     db.config.env["PUBLIC_ORIGIN"]="https://manager.example.com"
     with TestClient(create_app(db)) as c:
-        r=c.post("/api/v1/auth/setup",headers={"Origin":"https://manager.example.com"},json={"password":"a-long-test-password"})
+        r=c.post("/api/v1/auth/login",headers={"Origin":"https://manager.example.com"},json={"password":"a-long-test-password"})
         assert r.status_code==200
         assert "Secure" in r.headers["set-cookie"]
         token=r.cookies.get("manager_session")
@@ -178,10 +199,10 @@ def test_trade_defaults_are_safe(client):
     assert s["daily_purchase_limit_rub"]=="0"
 
 
-def test_buyer_message_templates_validate_and_start_disabled(client):
+def test_buyer_message_templates_validate_and_start_enabled(client):
     headers=authenticate(client)
     settings=client.get("/api/v1/settings").json()
-    assert not settings["buyer_paid_enabled"] and not settings["buyer_delivered_enabled"]
+    assert settings["buyer_paid_enabled"] and settings["buyer_delivered_enabled"]
     payload={"buyer_paid_enabled":True,"buyer_paid_template":"Оплата {price} ₽, заказ {order_id}"}
     assert client.patch("/api/v1/settings",headers=headers,json=payload).status_code==200
     invalid=client.patch("/api/v1/settings",headers=headers,json={"buyer_delivered_template":"{recipient.password}"})
@@ -314,3 +335,12 @@ def test_creating_listing_requires_exact_pair(db,client):
     assert r.status_code==200
     assert r.json()["payload"]["fields"]["pair_id"]=="p"
     assert r.json()["state"]=="PREVIEW"
+    assert r.json()["payload"]["fields"]["keep_in_sale"] is False
+    enabled=client.post("/api/v1/lots/create-preview",headers=headers,data={**fields,"pair_id":"p","keep_in_sale":"true"},files={"image":("gift.png",png,"image/png")})
+    assert enabled.json()["payload"]["fields"]["keep_in_sale"] is True
+    premium_fields={**fields,"pair_id":"p","premium":"true"}
+    assert client.post("/api/v1/lots/create-preview",headers=headers,data=premium_fields,files={"image":("gift.png",png,"image/png")}).status_code==400
+    premium=client.post("/api/v1/lots/create-preview",headers=headers,data={**premium_fields,"premium_max_rub":"50"},files={"image":("gift.png",png,"image/png")})
+    assert premium.status_code==200
+    assert premium.json()["payload"]["fields"]["premium"] is True
+    assert premium.json()["expected"]["cost_rub"]=="50"
