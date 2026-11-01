@@ -331,7 +331,8 @@ def canonical_query(params):
 
 
 def query_signature(params):
-    return hashlib.sha256(json.dumps({"market_version": 4, "q": params["q"], "collection": params["collection"], "model": params["model"],
+    version = 5 if params["model"] and len(filter_values(params["collection"])) > 1 else 4
+    return hashlib.sha256(json.dumps({"market_version": version, "q": params["q"], "collection": params["collection"], "model": params["model"],
         "backdrop": params["backdrop"], "symbol": params["symbol"], "sort": params["sort"],
         "min": params["min_price"], "max": params["max_price"]}, sort_keys=True).encode()).hexdigest()
 
@@ -622,17 +623,12 @@ def fill_browse(q: str = "", collection: str = "",
     search_collections = filter_values(collection)
     model_groups, search_models = grouped_models(search_collections, model)
     if model_groups:
-        allowed_names = set().union(*model_groups.values())
-        complete = True
-        for owner in search_collections:
-            if owner not in model_groups:
-                dictionary = meta("models:" + owner, {}).get("items", [])
-                if not dictionary:
-                    complete = False
-                    break
-                allowed_names.update(dictionary)
-        if complete:
-            search_models = sorted(allowed_names)
+        # MRKT's modelNames applies to every collection in the request. An
+        # unrestricted collection cannot be represented by expanding its model
+        # dictionary: that creates a large cross-collection filter upstream.
+        # Fetch all models instead and enforce each owner's scope below.
+        search_models = (sorted(set().union(*model_groups.values()))
+                         if all(owner in model_groups for owner in search_collections) else [])
     number = None
     text = q.strip().casefold().lstrip("#№").strip()
     if text:

@@ -439,9 +439,12 @@ def test_local_multiple_filters_use_or_within_and_across_groups(client):
     assert client.get("/api/browse", params={"backdrop": "[broken"}).status_code == 422
 
 
-def test_models_only_constrain_their_own_collection(client, monkeypatch):
+@pytest.mark.parametrize("with_dictionary",[False,True])
+def test_models_only_constrain_their_own_collection(client, monkeypatch,with_dictionary):
     collections = json.dumps(["Algorithm Cup", "Artisan Brick"])
     model = "Artisan Brick::model::Prism"
+    if with_dictionary:
+        server.save_meta("models:Algorithm Cup",{"items":["Classic","Prism",*[f"Model {i}" for i in range(120)]]})
     def request(method, path, payload):
         assert payload["modelNames"] == []  # Cup is unrestricted.
         gifts = [
@@ -457,6 +460,26 @@ def test_models_only_constrain_their_own_collection(client, monkeypatch):
     assert data["total_is_upper_bound"] is True
     local = client.get("/api/gifts", params={"collection": collections, "model": model}).json()
     assert local["total"] == 3
+
+
+def test_partially_scoped_models_keep_unrestricted_collection_and_continue_cursor(client,monkeypatch):
+    server.save_meta("models:Artisan Brick",{"items":[f"Model {i}" for i in range(150)]})
+    calls=[]
+    def request(method,path,payload):
+        assert payload["modelNames"]==[]
+        calls.append(payload.get("cursor"))
+        if not payload.get("cursor"):
+            return {"gifts":[{**upstream_gift(901),"collectionName":"Algorithm Cup","modelName":"Silver"}],"cursor":"page-2","total":4}
+        return {"gifts":[
+            {**upstream_gift(902),"collectionName":"Algorithm Cup","modelName":"Bronze"},
+            {**upstream_gift(903),"collectionName":"Artisan Brick","modelName":"Prism"},
+            {**upstream_gift(904),"collectionName":"Artisan Brick","modelName":"Classic"},
+        ],"cursor":"","total":4}
+    monkeypatch.setattr(server.collector,"request",request)
+    response=client.get("/api/browse",params={"collection":json.dumps(["Algorithm Cup","Artisan Brick"]),"model":"Algorithm Cup::model::Bronze"})
+    assert response.status_code==200
+    assert [g["id"] for g in response.json()["items"]]==["live-902","live-903","live-904"]
+    assert calls==["","page-2"]
 
 
 def test_catalog_refreshes_its_own_exchange_rate(client, monkeypatch):
