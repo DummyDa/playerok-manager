@@ -344,3 +344,38 @@ def test_creating_listing_requires_exact_pair(db,client):
     assert premium.status_code==200
     assert premium.json()["payload"]["fields"]["premium"] is True
     assert premium.json()["expected"]["cost_rub"]=="50"
+
+
+
+
+
+
+def test_silent_manual_completion_stops_work_without_fabricating_delivery(db,client):
+    headers=authenticate(client)
+    cid="credit";oid="manual"
+    db.put("catalog_credit_payment",cid,{"state":"REVIEW","paid_rub":"500","reservation_rub":"500","fulfillment_order_id":oid})
+    db.put("order",oid,{"stage":"MANUAL","catalog_credit_id":cid})
+    db.put("operation","uncertain",{"state":"UNKNOWN","action":"order.buy","order_id":oid,"submitted_at":1})
+    db.put("operation","waiting",{"state":"QUEUED","action":"order.withdraw","order_id":oid})
+    db.put("catalog_message","message",{"state":"QUEUED","credit_id":cid})
+    db.enqueue("execute",{"operation_id":"waiting"},key="silent-test")
+    endpoint=f"/api/v1/orders/{oid}/complete-manually"
+    assert client.post(endpoint).status_code==403
+    assert client.post(endpoint,headers=headers).status_code==200
+    assert db.get("order",oid)["stage"]=="COMPLETE"
+    assert db.get("operation","uncertain")["state"]=="UNKNOWN"
+    assert db.get("operation","waiting")["state"]=="CANCELLED"
+    assert db.get("catalog_message","message")["state"]=="CANCELLED"
+    assert db.get("catalog_credit_payment",cid)["state"]=="DELETED"
+    from backend.app.catalog_credit import balance
+    assert balance(db.get("catalog_credit_payment",cid))==0
+    assert not db.list("ledger") and not db.list("buyer_message")
+    assert client.post(endpoint,headers=headers).status_code==200
+
+
+def test_silent_completion_rejects_active_external_request(db,client):
+    headers=authenticate(client)
+    db.put("order","busy",{"stage":"MANUAL"})
+    db.put("operation","send",{"state":"SUBMITTED","order_id":"busy"})
+    assert client.post("/api/v1/orders/busy/complete-manually",headers=headers).status_code==400
+    assert db.get("order","busy")["stage"]=="MANUAL"

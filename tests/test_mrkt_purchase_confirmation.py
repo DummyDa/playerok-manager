@@ -51,3 +51,13 @@ def test_reconcile_purchase_restores_checkpoint_without_rebuy(db,monkeypatch,hel
     db.put("operation","o:buy",{"state":"UNKNOWN"})
     svc.reconcile("o:buy")
     assert len(db.list("ledger"))==1
+
+
+def test_buy_rate_limit_during_ownership_lookup_never_repeats_post(db,monkeypatch):
+    from backend.app.safety import RateLimited,PurchaseConfirmationPending
+    db.configure(purchases_enabled=True)
+    mrkt=Mrkt(db)
+    request=Mock(side_effect=[{},RateLimited("wait",123,safe_to_retry=True)])
+    monkeypatch.setattr(mrkt,"request",request)
+    with pytest.raises(PurchaseConfirmationPending):mrkt.buy(gift())
+    assert [c.args[0] for c in request.call_args_list]==["POST","GET"]

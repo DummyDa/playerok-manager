@@ -56,9 +56,14 @@ class Worker:
                 task.result=result if isinstance(result,dict) else {"ok":True};task.error=None
         except Exception as exc:
             error=self.db.redact(exc)
-            waiting=kind=="process_order" and isinstance(exc,RateLimited)
+            rate_wait=kind=="process_order" and isinstance(exc,RateLimited)
+            waiting=rate_wait and int(payload.get("rate_limit_retries",0))<5
+            previous_order=self.db.get("order",payload.get("order_id")) if rate_wait else None
+            previous_credit=self.db.get("catalog_credit_payment",previous_order["catalog_credit_id"]) if previous_order and previous_order.get("catalog_credit_id") else None
+            if rate_wait and not waiting:error="MRKT недоступен после 5 повторов. Нужна ручная обработка: "+error
             with self.db.tx() as s:
                 task=s.get(Task,id);task.error=error;task.lease=None
+                if waiting:task.payload={**payload,"rate_limit_retries":int(payload.get("rate_limit_retries",0))+1}
                 # Money tasks never retry blindly; all public write paths use operations.
                 retry=waiting or (kind not in {"execute","process_order","telegram_auth","buyer_message","catalog_message","catalog_create","grant_message","grant_execute","grant_refund"} and task.attempts<4)
                 task.state="READY" if retry else "FAILED"
@@ -70,11 +75,16 @@ class Worker:
                 if not retry:task.dedupe=None
             if waiting:self.db.put("order",payload["order_id"],{"reason":"Ожидаем разрешённое время проверки. Повторно оплачивать не нужно."})
             if kind=="process_order" and not waiting:self.db.put("order",payload["order_id"],{"stage":"MANUAL","reason":error})
-            if kind=="process_order" and not waiting:
+            if kind=="process_order" and not waiting and not rate_wait:
                 from .catalog_credit import failed_order
                 failed_order(self.db,payload["order_id"],error)
                 from .funded_orders import action_failure
                 action_failure(self.db,payload["order_id"],error)
+            if rate_wait and not waiting and previous_credit and (self.db.get("catalog_credit_payment",previous_credit["id"]) or {}).get("state")!="DELETED":
+                self.db.put("catalog_credit_payment",previous_credit["id"],{"state":"REVIEW","notice":error,"reservation_rub":previous_credit.get("reservation_rub","0")})
+            if rate_wait and not waiting and (previous_order or {}).get("funding_grant_id"):
+                grant=self.db.get("grant",previous_order["funding_grant_id"])
+                if grant and grant.get("state")=="EXECUTING":self.db.put("grant",grant["id"],{"state":"REVIEW","notice":error})
             self.db.log("task_error","Ошибка фоновой задачи",kind+": "+error,"ERROR")
         self.db.put("worker","main",{"status":"IDLE","task":None,"heartbeat":time.time()})
         return True
@@ -108,6 +118,7 @@ class Worker:
             if kind=="grant_execute":return funding.execute(service,p["grant_id"])
             if kind=="grant_message":return funding.send_message(service,p["message_id"])
             if kind=="grant_refund":return funding.refund(service,p["grant_id"],p.get("payment_id"))
+        if kind=="confirm_purchase":return service.confirm_purchase(p["operation_id"])
         if kind in {"catalog_create","catalog_expire"}:
             from .catalog_checkout import create,expire
             return create(service,p["checkout_id"]) if kind=="catalog_create" else expire(service)

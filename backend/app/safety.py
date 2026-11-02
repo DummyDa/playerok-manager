@@ -1,8 +1,12 @@
 class IntegrationError(RuntimeError): pass
 class RateLimited(IntegrationError):
-    def __init__(self,message,retry_at):
+    def __init__(self,message,retry_at,*,safe_to_retry=False):
         super().__init__(message)
         self.retry_at=retry_at
+        self.safe_to_retry=safe_to_retry
+class PurchaseConfirmationPending(RateLimited):
+    """Purchase was accepted; only its ownership lookup may be retried."""
+    pass
 class ManualRequired(IntegrationError): pass
 class WriteBlocked(IntegrationError): pass
 

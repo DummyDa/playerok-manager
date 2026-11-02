@@ -505,3 +505,79 @@ def test_repeated_promo_payments_reuse_code_and_preserve_balance(db,real):
     db.put("catalog_credit_payment",wallet["id"],{"state":"REVIEW"})
     credit.handle_payment(service,{**first,"id":"three"})
     assert len(db.list("catalog_credit_payment"))==2
+
+
+def test_purchase_confirmation_rate_limit_retries_read_only_five_times(db,real):
+    from backend.app.safety import PurchaseConfirmationPending,RateLimited
+    service,gift,raw,client=real
+    account,_=credit.create(db,"1000","buyer")
+    credit.choose(db,account,gift,price(db,"4")["sale_price"],"buyer")
+    credit.fulfill(service,account["id"])
+    oid=db.get("catalog_credit_payment",account["id"])["fulfillment_order_id"]
+    service.process_order(oid)
+    service.mrkt.buy.side_effect=PurchaseConfirmationPending("wait for inventory",time.time()+3)
+    service.execute(oid+":buy")
+    assert db.get("operation",oid+":buy")["state"]=="VERIFYING"
+    assert db.get("catalog_credit_payment",account["id"])["state"]=="EXECUTING"
+    service.mrkt.owned_gift.side_effect=RateLimited("inventory busy",time.time()+3)
+    for _ in range(5):service.confirm_purchase(oid+":buy")
+    assert db.get("operation",oid+":buy")["state"]=="UNKNOWN"
+    assert db.get("operation",oid+":buy")["rate_limit_retries"]==5
+    assert db.get("order",oid)["stage"]=="MANUAL"
+    service.mrkt.buy.assert_called_once()
+
+
+def test_purchase_confirmation_can_finish_without_second_purchase(db,real):
+    from backend.app.safety import PurchaseConfirmationPending
+    service,gift,raw,client=real
+    account,_=credit.create(db,"1000","buyer")
+    credit.choose(db,account,gift,price(db,"4")["sale_price"],"buyer")
+    credit.fulfill(service,account["id"])
+    oid=db.get("catalog_credit_payment",account["id"])["fulfillment_order_id"]
+    service.process_order(oid)
+    service.mrkt.buy.side_effect=PurchaseConfirmationPending("wait",time.time()+3)
+    service.execute(oid+":buy")
+    service.mrkt.owned_gift.return_value={"id":"owned-gift"}
+    service.confirm_purchase(oid+":buy")
+    service.confirm_purchase(oid+":buy")
+    assert db.get("operation",oid+":buy")["state"]=="COMPLETE"
+    assert db.get("order",oid)["stage"]=="PURCHASED"
+    assert len([e for e in db.list("ledger") if e["type"]=="purchase"])==1
+    service.mrkt.buy.assert_called_once()
+
+
+def test_safe_unsubmitted_rate_limits_have_five_retries(db,real):
+    from backend.app.safety import RateLimited
+    service,gift,raw,client=real
+    account,_=credit.create(db,"1000","buyer")
+    credit.choose(db,account,gift,price(db,"4")["sale_price"],"buyer")
+    credit.fulfill(service,account["id"])
+    oid=db.get("catalog_credit_payment",account["id"])["fulfillment_order_id"]
+    service.process_order(oid)
+    service.mrkt.buy.side_effect=RateLimited("request not sent",time.time()+3,safe_to_retry=True)
+    for _ in range(5):
+        service.execute(oid+":buy")
+        assert db.get("operation",oid+":buy")["state"]=="QUEUED"
+        assert db.get("order",oid)["stage"]!="MANUAL"
+    service.execute(oid+":buy")
+    assert db.get("operation",oid+":buy")["state"]=="FAILED"
+    assert db.get("order",oid)["stage"]=="MANUAL"
+    assert service.mrkt.buy.call_count==6
+
+
+def test_process_order_rate_limit_stops_after_five_retries(db,real,monkeypatch):
+    from backend.app.safety import RateLimited
+    service,gift,raw,client=real
+    account,_=credit.create(db,"1000","buyer")
+    credit.choose(db,account,gift,price(db,"4")["sale_price"],"buyer")
+    credit.fulfill(service,account["id"])
+    oid=db.get("catalog_credit_payment",account["id"])["fulfillment_order_id"]
+    worker=Worker(db);payload={"order_id":oid,"rate_limit_retries":5}
+    task_id=db.enqueue("process_order",payload,key="final-rate-attempt")
+    monkeypatch.setattr(worker,"claim",lambda:(task_id,"process_order",payload))
+    monkeypatch.setattr(worker,"dispatch",Mock(side_effect=RateLimited("wait",time.time()+3)))
+    worker.run_one()
+    assert db.get("order",oid)["stage"]=="MANUAL"
+    wallet=db.get("catalog_credit_payment",account["id"])
+    assert wallet["state"]=="REVIEW" and credit.D(wallet["reservation_rub"])>0
+    assert "5 повторов" in wallet["notice"]

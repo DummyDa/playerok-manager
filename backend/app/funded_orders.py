@@ -83,7 +83,7 @@ def handle_payment(service,order,historical=False):
         db.put("grant_payment",old["id"],{"status":order["status"]})
         if order["status"]=="ROLLED_BACK":
             grant=db.get("grant",gid)
-            if grant and grant["state"] not in {"DELIVERED","REFUNDED","REFUNDING"}:
+            if grant and grant["state"] not in {"DELIVERED","REFUNDED","REFUNDING","CANCELLED"}:
                 cas(db,"grant",gid,OPEN,{"state":"REFUNDING","notice":"Оплата отменена; проверяем остальные платежи"})
                 db.enqueue("grant_refund",{"grant_id":gid},key="grant_refund:"+gid)
         return True
@@ -96,7 +96,7 @@ def handle_payment(service,order,historical=False):
         db.put("grant_payment",order["id"],{"grant_id":gid,"amount_rub":order["sale_rub"],"status":order["status"],"buyer_id":order.get("buyer_id"),"accepted":correct,"kind":"TOPUP","lot_id":order.get("lot_id"),"chat_id":order.get("chat_id")})
         db.put("order",order["id"],{**order,"stage":"FUNDING_PAYMENT","grant_id":gid,"funding_role":"TOPUP","playerok_status":order["status"]})
         checkout=db.get("catalog_checkout",lot.get("catalog_checkout_id")) or {}
-        if not correct or grant["state"] in {"DELIVERED","REFUNDING","REFUNDED"}:
+        if not correct or grant["state"] in {"DELIVERED","REFUNDING","REFUNDED","CANCELLED"}:
             db.enqueue("grant_refund",{"grant_id":gid,"payment_id":order["id"]},key="grant_refund_payment:"+order["id"])
         elif grant["state"]=="AWAITING_TOPUP" and grant.get("checkout_id")==lot.get("catalog_checkout_id") and checkout.get("state")=="READY" and checkout.get("expires_at",0)>=time.time():
             db.put("catalog_checkout",checkout["id"],{"state":"PAID"})

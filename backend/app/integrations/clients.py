@@ -14,7 +14,7 @@ from .mrkt_availability import gift_block_reason
 from ..db import Database
 from ..order_dates import order_created_at
 from ..pricing import D
-from ..safety import IntegrationError,ManualRequired,WriteBlocked,RateLimited,gate
+from ..safety import IntegrationError,ManualRequired,WriteBlocked,RateLimited,PurchaseConfirmationPending,gate
 from ..tls_ca import ca_bundle_path
 
 class GuardSession(requests.Session):
@@ -257,7 +257,7 @@ class Mrkt:
         strikes=int(throttle.get("rate_limits",0))+1
         retry=max(1,retry,min(3600,60*2**min(strikes-1,6)))
         self.db.put("throttle","mrkt",{"next":time.time()+retry,"rate_limits":strikes})
-        raise RateLimited("MRKT ограничил частоту запросов",time.time()+retry)
+        raise RateLimited("MRKT ограничил частоту запросов",time.time()+retry,safe_to_retry=True)
 
     def authenticate(self):
         async def auth(client):
@@ -275,9 +275,12 @@ class Mrkt:
         if write: gate(self.db, "purchases")
         throttle = self.db.get("throttle", "mrkt") or {}
         delay = throttle.get("next",0)-time.time()
-        if delay > 2: raise RateLimited(f"MRKT: пауза по ограничению запросов ещё {delay:.0f} секунд",throttle["next"])
+        if delay > 2: raise RateLimited(f"MRKT: пауза по ограничению запросов ещё {delay:.0f} секунд",throttle["next"],safe_to_retry=True)
         if not self.token: self.authenticate()
-        delay=self.db.reserve_throttle("mrkt",1.5)
+        try:delay=self.db.reserve_throttle("mrkt",1.5)
+        except RateLimited as exc:
+            exc.safe_to_retry=True
+            raise
         if delay > 0: time.sleep(delay)
         if write:gate(self.db,"purchases")
         response = self.http.request(method,self.config.get("MRKT_API_URL","https://api.tgmrkt.io/api/v1")+path,
@@ -332,7 +335,9 @@ class Mrkt:
         self.request("POST","/gifts/buy",{"ids":[gift["id"]],"prices":{gift["id"]:gift["salePrice"]}},write=True)
         # The buy response is not consistently a list of gift objects. Confirm
         # the exact purchased asset through a read-only ownership endpoint.
-        found = self.owned_gift(gift)
+        try:found = self.owned_gift(gift)
+        except RateLimited as exc:
+            raise PurchaseConfirmationPending(str(exc),exc.retry_at) from exc
         if not found: raise ManualRequired("MRKT не подтвердил ID купленного подарка; требуется сверка")
         return found
 

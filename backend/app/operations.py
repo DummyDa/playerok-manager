@@ -52,6 +52,8 @@ def recover(db):
         if op.get("state")=="SUBMITTED":
             db.put("operation",op["id"],{"state":"UNKNOWN","error":"Процесс прерван после отправки. Нужна сверка результата."})
             if op.get("order_id"): db.put("order",op["order_id"],{"stage":"MANUAL","reason":"Неизвестен результат денежной операции"})
+        elif op.get("state")=="VERIFYING" and op.get("action")=="order.buy":
+            db.enqueue("confirm_purchase",{"operation_id":op["id"]},key="confirm-purchase:"+op["id"],due=max(time.time(),op.get("retry_at",0)))
         elif op.get("state")=="QUEUED": db.enqueue("execute",{"operation_id":op["id"]},key="execute:"+op["id"])
     for message in db.list("buyer_message",100000):
         if message.get("state")=="SUBMITTED":

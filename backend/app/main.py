@@ -498,6 +498,11 @@ def create_app(db:Database|None=None):
     @app.post("/api/v1/orders/sync")
     def sync_orders()->dict:return {"task_id":db.enqueue("orders")}
 
+    @app.post("/api/v1/orders/{id}/complete-manually")
+    def complete_manually(id:str)->dict:
+        from .manual_completion import complete
+        return complete(db,id)
+
     @app.post("/api/v1/orders/{id}/manual-delivered")
     def manual_delivered(id:str)->dict:
         from .manual_delivery import allowed

@@ -6,6 +6,7 @@ import {Button,Dialog,Notice} from "./ui";
 
 export default function ManualDeliveryButton({order,refresh,act,busy}:{order:Row;refresh:()=>Promise<unknown>} & Actions){
   const [confirm,setConfirm]=useState(false);
+  if(order.stage==="MANUAL")return <><Button secondary disabled={busy} onClick={()=>setConfirm(true)}>Завершить вручную</Button>{confirm&&<Dialog title="Завершить заказ без отправки?" busy={busy} onClose={()=>setConfirm(false)} footer={<><Button secondary disabled={busy} onClick={()=>setConfirm(false)}>Назад</Button><Button disabled={busy} onClick={()=>act(async()=>{await api(`/orders/${encodeURIComponent(order.id)}/complete-manually`,"POST");setConfirm(false);await refresh();},"Заказ завершён в панели без отправки покупателю")}>Завершить без отправки</Button></>}><Notice>Заказ и связанные оплаты будут помечены завершёнными только в панели. Код закроется. Закупка, передача NFT, изменение статуса на Playerok и сообщения покупателю не запустятся.</Notice></Dialog>}</>;
   if(!order.manual_delivery_allowed)return null;
   return <><Button disabled={busy} onClick={()=>setConfirm(true)}>Выдан</Button>{confirm&&<Dialog title="Подтвердить ручную выдачу" busy={busy} onClose={()=>setConfirm(false)} footer={<><Button secondary disabled={busy} onClick={()=>setConfirm(false)}>Назад</Button><Button disabled={busy} onClick={()=>act(async()=>{
     const task=await api(`/orders/${encodeURIComponent(order.id)}/manual-delivered`,"POST");

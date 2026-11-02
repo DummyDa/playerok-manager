@@ -10,6 +10,7 @@ COPY backend ./backend
 COPY catalog ./catalog
 COPY scripts ./scripts
 COPY alembic.ini ./
+COPY frontend/public/fonts/nunito-sans-3.ttf ./frontend/public/fonts/nunito-sans-3.ttf
 RUN mkdir -p data/logs catalog/data/images && chown -R 10001:10001 data catalog/data
 USER 10001:10001
 RUN python -c "from tls_requests import Client; c=Client(); c.close()"

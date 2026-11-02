@@ -200,3 +200,34 @@ def test_concurrent_requests_cannot_take_sixth_personal_slot(db,prepared):
         except ValueError as exc:assert "слишком много лотов" in str(exc);return False
     with ThreadPoolExecutor(max_workers=6) as pool:results=list(pool.map(attempt,range(6)))
     assert sum(results)==5
+
+
+@pytest.mark.parametrize("state",["PRICE_CHANGED","FAILED","EXPIRED","PAID"])
+@pytest.mark.parametrize("submitted",[None,0,100])
+def test_inactive_nullable_checkout_does_not_crash_or_consume_a_slot(db,prepared,state,submitted):
+    _,gift,_,client=prepared
+    owner=("visitor:one","ip:one")
+    for index in range(7):
+        db.put("catalog_checkout","old"+str(index),{"state":state,"owner_keys":list(owner),"submitted_at":submitted,"expires_at":None})
+    key=checkout.request_checkout(db,gift,price(db,"4")["sale_price"],owner)
+    assert db.get("catalog_checkout",key)["state"]=="QUEUED"
+    client.create.assert_not_called()
+
+
+def test_myth_mask_listing_cover_uses_model_api_and_keeps_exact_nft(db,prepared):
+    service,gift,raw,client=prepared
+    gift.update(collection="Myth Mask",model="Red Oni",slug="MythMask-5")
+    raw["name"]="MythMask-5"
+    key=checkout.request_checkout(db,gift,price(db,"4")["sale_price"])
+    checkout.create(service,key)
+    checkout.requests.get.assert_called_once_with("https://api.changes.tg/model/Myth%20Mask/Red%20Oni.png",timeout=20)
+    client.create.assert_called_once()
+    assert db.get("catalog_checkout",key)["state"]=="READY"
+    assert db.get("lot","lot")["catalog_gift_slug"]=="MythMask-5"
+    assert Image.open(BytesIO(client.create.call_args.args[1])).size==(1280,960)
+
+
+def test_cover_source_change_is_scoped_to_myth_mask():
+    assert checkout.cover_source_url({"slug":"ChillFlame-5","model":"Ghost Light"})=="https://nft.fragment.com/gift/chillflame-5.webp"
+    assert checkout.cover_source_url({"slug":"MythMask-1","model":"A/B"}).endswith("A%2FB.png")
+    with pytest.raises(ValueError):checkout.cover_source_url({"slug":"MythMask-1"})

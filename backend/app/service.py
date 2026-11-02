@@ -15,7 +15,7 @@ from .integrations.mrkt_availability import gift_block_reason
 from .safety import is_nft_lot
 from .operations import new_operation
 from .listing_prices import validate_price
-from .safety import RateLimited
+from .safety import RateLimited,PurchaseConfirmationPending
 
 def day_start():
     local=datetime.now(timezone(timedelta(hours=3))).replace(hour=0,minute=0,second=0,microsecond=0)
@@ -450,19 +450,60 @@ class Service:
             if op.get("order_id"): self.db.enqueue("process_order",{"order_id":op["order_id"]},key="order:"+op["order_id"])
         except Exception as exc:
             submitted=(self.db.get("operation",op_id) or {}).get("state")=="SUBMITTED"
-            if isinstance(exc,RateLimited) and not submitted:
-                due=max(time.time()+1,exc.retry_at+0.5)
-                self.db.put("operation",op_id,{"state":"QUEUED","error":None,"retry_at":due})
-                self.db.enqueue("execute",{"operation_id":op_id},key="execute-wait:"+op_id+":"+uid(),due=due)
-                return {"waiting":True}
-            self.db.put("operation",op_id,{"state":"UNKNOWN" if submitted else "FAILED","error":self.db.redact(exc)})
-            if op.get("order_id"): self.db.put("order",op["order_id"],{"stage":"MANUAL","reason":self.db.redact(exc)})
-            if op.get("order_id"):
-                from .catalog_credit import failed_order
-                failed_order(self.db,op["order_id"],self.db.redact(exc),submitted)
-                from .funded_orders import action_failure
-                action_failure(self.db,op["order_id"],self.db.redact(exc),submitted)
-            self.notice("operation-error:"+op_id,"Операция требует проверки",self.db.redact(exc),operation_id=op_id)
+            confirmation=isinstance(exc,PurchaseConfirmationPending)
+            retry_safe=not submitted or (getattr(exc,"safe_to_retry",False) and action in {"order.buy","order.withdraw"})
+            if isinstance(exc,RateLimited) and (confirmation or retry_safe):
+                if self.wait_rate_operation(op,exc,confirmation=confirmation):return {"waiting":True}
+                if retry_safe and not confirmation:
+                    submitted=False
+                    self.db.put("operation",op_id,{"submitted_at":None})
+            self.fail_operation(op,exc,submitted)
+
+    def wait_rate_operation(self,op,exc,confirmation=False):
+        current=self.db.get("operation",op["id"]) or op
+        count=int(current.get("rate_limit_retries",0))
+        if count>=5:return False
+        count+=1
+        due=max(time.time()+min(30,2**count),exc.retry_at+0.5)
+        values={"state":"VERIFYING" if confirmation else "QUEUED","error":None,"retry_at":due,"rate_limit_retries":count}
+        if not confirmation:values["submitted_at"]=None
+        self.db.put("operation",op["id"],values)
+        self.db.enqueue("confirm_purchase" if confirmation else "execute",{"operation_id":op["id"]},key="rate-wait:"+op["id"]+":"+str(count),due=due)
+        if op.get("order_id"):
+            self.db.put("order",op["order_id"],{"reason":f"MRKT занят. Ожидаем повтор {count}/5; повторно оплачивать не нужно."})
+        return True
+
+    def fail_operation(self,op,exc,submitted):
+        op_id=op["id"]
+        exhausted=isinstance(exc,RateLimited) and (self.db.get("operation",op_id) or {}).get("rate_limit_retries",0)>=5
+        order=self.db.get("order",op.get("order_id")) if op.get("order_id") else None
+        cid=(order or {}).get("catalog_credit_id")
+        previous_credit=self.db.get("catalog_credit_payment",cid) if cid else None
+        if exhausted:exc=RuntimeError("MRKT недоступен после 5 повторов. Нужна ручная обработка: "+str(exc))
+        self.db.put("operation",op_id,{"state":"UNKNOWN" if submitted else "FAILED","error":self.db.redact(exc)})
+        if op.get("order_id"):self.db.put("order",op["order_id"],{"stage":"MANUAL","reason":self.db.redact(exc)})
+        if op.get("order_id"):
+            from .catalog_credit import failed_order
+            failed_order(self.db,op["order_id"],self.db.redact(exc),submitted)
+            from .funded_orders import action_failure
+            action_failure(self.db,op["order_id"],self.db.redact(exc),submitted)
+        if exhausted and previous_credit and (self.db.get("catalog_credit_payment",cid) or {}).get("state")!="DELETED":
+            self.db.put("catalog_credit_payment",cid,{"state":"REVIEW","notice":str(exc),"reservation_rub":previous_credit.get("reservation_rub","0")})
+        if exhausted and (order or {}).get("funding_grant_id"):
+            grant=self.db.get("grant",order["funding_grant_id"])
+            if grant and grant.get("state")=="EXECUTING":self.db.put("grant",grant["id"],{"state":"REVIEW","notice":str(exc)})
+        self.notice("operation-error:"+op_id,"Операция требует проверки",self.db.redact(exc),operation_id=op_id)
+
+    def confirm_purchase(self,op_id):
+        op=self.db.get("operation",op_id)
+        if not op or op.get("state")!="VERIFYING" or op.get("action")!="order.buy":return
+        try:
+            self.reconcile(op_id)
+            if (self.db.get("operation",op_id) or {}).get("state")!="COMPLETE":
+                raise ManualRequired("MRKT не подтвердил владение купленным NFT; нужна сверка")
+        except RateLimited as exc:
+            if not self.wait_rate_operation(op,exc,confirmation=True):self.fail_operation(op,exc,True)
+        except Exception as exc:self.fail_operation(op,exc,True)
 
     def ledger(self, op_id, kind, amount, lot_id=None, order_id=None, **extra):
         if self.db.get("ledger",op_id+":"+kind):return
@@ -678,7 +719,7 @@ class Service:
             gift_id=str(quote["gift"].get("id", ""))
             for previous in self.db.list("operation",100000):
                 if (previous.get("id")!=op.get("id") and previous.get("action")=="order.buy"
-                        and previous.get("state") in {"SUBMITTED","UNKNOWN","COMPLETE"}
+                        and previous.get("state") in {"SUBMITTED","UNKNOWN","VERIFYING","COMPLETE"}
                         and str((previous.get("payload",{}).get("gift") or {}).get("id",""))==gift_id
                         and (self.db.get("order",previous.get("order_id")) or {}).get("stage")!="COMPLETE"):
                     raise ManualRequired("Этот NFT уже закупается другим заказом или результат закупки требует сверки")
@@ -755,7 +796,7 @@ class Service:
 
     def reconcile(self, op_id):
         op=self.db.get("operation",op_id)
-        if not op or op.get("state")!="UNKNOWN": raise ValueError("Нет неопределённой операции")
+        if not op or (op.get("state")!="UNKNOWN" and not (op.get("state")=="VERIFYING" and op.get("action")=="order.buy")): raise ValueError("Нет неопределённой операции")
         browser_job=self.db.get("browser_job",op_id)
         if browser_job:
             from .browser_delivery import tick

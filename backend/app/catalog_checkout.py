@@ -1,6 +1,7 @@
 """Worker-owned, single-attempt creation of short-lived exact-NFT listings."""
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import quote
 import re
 import time
 
@@ -28,6 +29,15 @@ def exact_quote(service, lot):
     if not isinstance(gift,dict) or str(gift.get("id"))!=lot["catalog_gift_id"] or slug!=lot["catalog_gift_slug"] or not gift.get("isOnSale") or gift.get("isSold") or gift_block_reason(gift):
         raise ManualRequired("Выбранный NFT больше недоступен; подмена другим подарком запрещена")
     return {"available":True,"gift":gift,"ton":service.mrkt.ton(gift["salePrice"]),"fetched_at":time.time()}
+
+
+def cover_source_url(gift):
+    slug=str(gift.get("slug") or "").lower()
+    if re.fullmatch(r"mythmask-\d+",slug):
+        model=str(gift.get("model") or "").strip()
+        if not model:raise ValueError("Не указана модель Myth Mask для обложки")
+        return "https://api.changes.tg/model/Myth%20Mask/"+quote(model,safe="")+".png"
+    return "https://nft.fragment.com/gift/"+slug+".webp"
 
 
 def cover(gift, image_bytes):
@@ -66,7 +76,7 @@ def request_checkout(db, gift, shown_price, owner_keys=()):
         pending=list(conn.execute(select(Entity.data).where(Entity.kind=="catalog_checkout")).scalars())
         now=time.time()
         for owner in owner_keys:
-            occupied=sum(owner in item.get("owner_keys",[]) and (item.get("state") in ACTIVE or (item.get("submitted_at") and item.get("expires_at",0)>now)) for item in pending)
+            occupied=sum(1 for item in pending if owner in (item.get("owner_keys") or []) and (item.get("state") in ACTIVE or (item.get("submitted_at") and (item.get("expires_at") or 0)>now)))
             if occupied>=5:
                 conn.rollback();raise ValueError("Вы создали слишком много лотов, повторите попытку позже")
         if sum(item.get("state") in ACTIVE for item in pending)>=20:
@@ -122,7 +132,7 @@ def create(service, key):
         from .manual_delivery import buyer_copy
         title=buyer_copy(db,title)[:200]
         description=buyer_copy(db,description)
-        response=requests.get("https://nft.fragment.com/gift/"+slug.lower()+".webp",timeout=20)
+        response=requests.get(cover_source_url(cached),timeout=20)
         response.raise_for_status();picture=cover(cached,response.content)
         pair_id=next((p["id"] for p in db.list("pair",100000) if p.get("collection")==cached["collection"] and p.get("model")==cached["model"]),uid());db.put("pair",pair_id,{"collection":cached["collection"],"model":cached["model"],"enabled":True})
         binding={**lot_ref,"lot_type":"TEMPORARY","pair_id":pair_id,"delivery_mode":"telegram_nft","fee_profile_id":settings["catalog_fee_profile_id"],
