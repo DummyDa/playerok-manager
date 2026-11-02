@@ -103,3 +103,11 @@ body .list-view .favorite-button{left:68px;right:auto;top:12px;width:28px;height
 
 .card-buy:disabled{cursor:not-allowed;opacity:.5;box-shadow:none}
 .gift-card[data-unavailable=true] .gift-price{opacity:.5}
+
+/* Myth Mask: transparent model assets retain the selected gift backdrop. */
+body .myth-mask-art .nft-animation{inset:12%!important;width:76%!important;height:76%!important;margin:0!important}
+body .myth-mask-art .nft-detail-preview{inset:12%;width:76%;height:76%}
+.myth-mask-pattern{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.myth-mask-pattern>span{position:absolute;width:11%;height:11%;background:#000;opacity:.12;mask:var(--pattern) center/contain no-repeat;-webkit-mask:var(--pattern) center/contain no-repeat}
+
+body .detail-art.myth-mask-art{background:radial-gradient(circle at 50% 40%,var(--c1),var(--c2))!important}

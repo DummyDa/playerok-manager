@@ -585,7 +585,7 @@ async def headers(request: Request, call_next):
         response=JSONResponse(public_data(json.loads(body)),status_code=response.status_code,headers={k:v for k,v in response.headers.items() if k.lower()!="content-length"})
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
-    response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data: https://nft.fragment.com; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://nft.fragment.com; frame-ancestors 'none'; base-uri 'self'"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data: https://nft.fragment.com https://api.changes.tg; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://nft.fragment.com https://api.changes.tg; frame-ancestors 'none'; base-uri 'self'"
     if request.url.path.startswith("/api/") and not request.url.path.startswith(("/api/animation/", "/api/gift-image/")):
         response.headers["Cache-Control"] = "no-store"
     if visitor_token:

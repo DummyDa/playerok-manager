@@ -136,6 +136,19 @@ function age(timestamp) {
   return `${Math.floor(seconds / 86400)} дн назад`;
 }
 function stale(gift) { return Date.now() / 1000 - gift.checked_at > (sourceStatus?.stale_after || 180); }
+function isMythMask(gift) { return /^mythmask-\d+$/i.test(gift.slug || ''); }
+function mythModelUrl(model) {
+  return 'https://api.changes.tg/model/Myth%20Mask/' + encodeURIComponent(model) + '.png';
+}
+function mythPattern(gift) {
+  if (!gift.symbol) return '';
+  const url='https://api.changes.tg/pattern/Myth%20Mask/' + encodeURIComponent(gift.symbol) + '.png';
+  const symbols=Array.from({length:20},(_,index)=>{
+    const row=Math.floor(index/5),column=index%5;
+    return `<span style="left:${(column*25)+(row%2?0:12.5)}%;top:${12.5+row*25}%;transform:translate(-50%,-50%) rotate(${index%2?12:-12}deg)"></span>`;
+  }).join('');
+  return `<div class="myth-mask-pattern" style="--pattern:url('${esc(url)}')" aria-hidden="true">${symbols}</div>`;
+}
 function art(gift, eager = false) {
   const pattern = "";
   return `<img class="gift-image" src="${esc(gift.image || '/icon.svg')}" alt="${esc(gift.model)}" loading="${eager ? 'eager' : 'lazy'}" decoding="async" width="240" height="240">${pattern}`;
@@ -147,7 +160,7 @@ function renderCards(fromIndex = 0) {
     gridAnimationPlayers.forEach(stop => stop?.());gridAnimationPlayers.clear();
   }
   const markup = items.slice(fromIndex).map((gift, index) => `<article class="gift-card">
-    <button class="card-open" data-id="${esc(gift.id)}" data-slug="${esc(gift.slug || "")}" aria-label="Открыть ${esc(gift.collection_label || gift.collection)} номер ${gift.number}">
+    <button class="card-open" data-id="${esc(gift.id)}" data-slug="${esc(gift.slug || "")}" data-model="${esc(gift.model || "")}" aria-label="Открыть ${esc(gift.collection_label || gift.collection)} номер ${gift.number}">
       <div class="gift-art" style="--c1:${esc(gift.center)};--c2:${esc(gift.edge)}"></div>
       <div class="gift-body"><h3>${esc(gift.collection_label || gift.collection)}</h3><p class="gift-model">#${integer(gift.number)}</p>
         <span class="gift-freshness${stale(gift) ? ' stale' : ''}">${stale(gift) ? 'Обновление ожидается' : 'Проверено ' + age(gift.checked_at)}</span>
@@ -297,7 +310,7 @@ async function refreshStatus() {
 }
 async function startNftAnimation(target, id, detail = false) {
   const generation = ++animationGeneration;
-  const module = await import('/nft-animation.js');
+  const module = await import('/nft-animation.js?v=myth-mask-1');
   if (generation !== animationGeneration || !target.isConnected) return;
   const stop = module.mountAnimation(target, id);
   if (detail) detailAnimationStop = stop; else hoverAnimationStop = stop;
@@ -309,8 +322,12 @@ function showDetail(gift) {
   $("#detail-art").style.setProperty("--c1", gift.center);
   $("#detail-art").style.setProperty("--c2", gift.edge);
   $("#detail-art").dataset.slug = gift.slug || '';
+  $("#detail-art").dataset.model = gift.model || '';
+  $("#detail-art").classList.toggle('myth-mask-art', isMythMask(gift));
   const previewSlug=String(gift.slug || '').toLowerCase();
-  $("#detail-art").innerHTML = /^[a-z0-9]+-\d+$/.test(previewSlug)
+  $("#detail-art").innerHTML = isMythMask(gift)
+    ? mythPattern(gift) + `<img class="nft-detail-preview" alt="${esc(gift.model)}" src="${esc(mythModelUrl(gift.model))}">`
+    : /^[a-z0-9]+-\d+$/.test(previewSlug)
     ? `<img class="nft-detail-preview" alt="${esc(gift.model)}" src="https://nft.fragment.com/gift/${previewSlug}.medium.jpg">` : art(gift, true);
   startNftAnimation($("#detail-art"), gift.id, true).catch(()=>{});
   $("#detail-title").textContent = gift.collection_label || gift.collection;
@@ -536,10 +553,15 @@ function observeGiftAnimations() {
       const id=card.dataset.id,slug=String(card.dataset.slug || '').toLowerCase();
       img.onload=()=>{target.classList.add('nft-ready');target.classList.remove('nft-loading');};
       let fallback=false;
-      img.onerror=()=>{if(!fallback){fallback=true;img.src='/api/gift-image/'+encodeURIComponent(id);return;}target.classList.add('nft-failed');target.classList.remove('nft-loading');layer.remove();};
+      img.onerror=()=>{if(!fallback&&!/^mythmask-\d+$/.test(slug)){fallback=true;img.src='/api/gift-image/'+encodeURIComponent(id);return;}target.classList.add('nft-failed');target.classList.remove('nft-loading');layer.remove();};
+      target.classList.toggle('myth-mask-art', /^mythmask-\d+$/.test(slug));
+      if (target.classList.contains('myth-mask-art')) {
+        const gift=items.find(gift=>gift.id===id);
+        if(gift) target.insertAdjacentHTML('afterbegin',mythPattern(gift));
+      }
       target.classList.add('nft-loading');layer.append(img);target.append(layer);
-      img.src=/^[a-z0-9]+-\d+$/.test(slug)?`https://nft.fragment.com/gift/${slug}.medium.jpg`:'/api/gift-image/'+encodeURIComponent(id);
-      gridAnimationPlayers.set(target,()=>{img.onload=img.onerror=null;layer.remove();target.classList.remove('nft-ready','nft-loading');});
+      img.src=/^mythmask-\d+$/.test(slug)?mythModelUrl(card.dataset.model):/^[a-z0-9]+-\d+$/.test(slug)?`https://nft.fragment.com/gift/${slug}.medium.jpg`:'/api/gift-image/'+encodeURIComponent(id);
+      gridAnimationPlayers.set(target,()=>{img.onload=img.onerror=null;layer.remove();target.querySelector('.myth-mask-pattern')?.remove();target.classList.remove('nft-ready','nft-loading');});
     });
   }, {rootMargin:'500px'});
   document.querySelectorAll('#grid .gift-art').forEach(target=>gridAnimationObserver.observe(target));
@@ -550,7 +572,7 @@ function warmGiftAnimation(event) {
   const card=event.target.closest('.card-open');
   if(!card || card.contains(event.relatedTarget))return;
   clearTimeout(nftWarmTimer);
-  nftWarmTimer=setTimeout(()=>import('/nft-animation.js').then(module=>module.preloadAnimation(card.dataset.id,card.dataset.slug)).catch(()=>{}),100);
+  nftWarmTimer=setTimeout(()=>import('/nft-animation.js?v=myth-mask-1').then(module=>module.preloadAnimation(card.dataset.id,card.dataset.slug,card.dataset.model)).catch(()=>{}),100);
 }
 $("#grid").addEventListener('pointerover',warmGiftAnimation);
 $("#grid").addEventListener('focusin',warmGiftAnimation);
