@@ -29,8 +29,8 @@ export function Toggle({ label, checked, onChange, description, disabled }: { la
 export function Empty({ text = "Пока нет данных", detail = "Данные появятся после синхронизации." }: { text?: string; detail?: string }) {
   return <div className="empty"><span className="empty-mark"><Layers size={21} aria-hidden="true" /></span><h3>{text}</h3><p>{detail}</p></div>;
 }
-export function Dialog({ title, children, onClose, footer, busy }: { title: string; children: ReactNode; onClose: () => void; footer?: ReactNode; busy?: boolean }) {
-  return <div className="overlay" onClick={() => !busy && onClose()}><section role="dialog" aria-modal="true" aria-label={title} className="dialog" onClick={e => e.stopPropagation()}><header><h2>{title}</h2><button className="icon-button" aria-label="Закрыть" onClick={onClose} disabled={busy}><X size={19} /></button></header><div className="dialog-body">{children}</div>{footer && <footer>{footer}</footer>}</section></div>;
+export function Dialog({ title, children, onClose, footer, busy, closeOnBackdrop = true }: { title: string; children: ReactNode; onClose: () => void; footer?: ReactNode; busy?: boolean; closeOnBackdrop?: boolean }) {
+  return <div className="overlay" onClick={() => closeOnBackdrop && !busy && onClose()}><section role="dialog" aria-modal="true" aria-label={title} className="dialog" onClick={e => e.stopPropagation()}><header><h2>{title}</h2><button className="icon-button" aria-label="Закрыть" onClick={onClose} disabled={busy}><X size={19} /></button></header><div className="dialog-body">{children}</div>{footer && <footer>{footer}</footer>}</section></div>;
 }
 export function External({ href }: { href: string }) { return <a className="icon-button" href={href} target="_blank" rel="noreferrer" title="Открыть на Playerok"><ArrowUpRight size={18} /></a>; }
 export function Sparkline({ values }: { values: number[] }) {
