@@ -170,7 +170,7 @@ def test_finance_and_overview_deduct_actual_premium_once_not_forecast_reserve(db
 
 def test_ordinary_products_never_request_premium_for_mrkt_profit(db,monkeypatch):
     client=premium_lot(db,monkeypatch);db.put("lot","l",{"delivery_mode":"manual"})
-    with pytest.raises(PricingError,match="только для Telegram NFT"):Service(db).estimate("l")
+    with pytest.raises(PricingError,match="выберите коллекцию"):Service(db).estimate("l")
     client.premium.assert_not_called()
 
 def test_changed_premium_tariff_rejects_execution_before_listing_mutation(db,monkeypatch):

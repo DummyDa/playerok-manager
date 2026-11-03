@@ -3,6 +3,7 @@ from decimal import Decimal, ROUND_CEILING, InvalidOperation
 class PricingError(ValueError): pass
 class PremiumQuoteRequired(PricingError): pass
 class FxQuoteRequired(PricingError): pass
+class CollectionQuoteRequired(PricingError): pass
 
 def D(value):
     try:

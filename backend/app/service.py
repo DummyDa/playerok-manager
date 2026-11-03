@@ -9,10 +9,11 @@ from decimal import Decimal
 from pathlib import Path
 import requests
 from .db import Database, uid
-from .pricing import D, calculate, calculate_with_premium, required_profit, net_coefficients, effective_fx, PricingError, PremiumQuoteRequired, FxQuoteRequired
+from .pricing import D, calculate, calculate_with_premium, required_profit, net_coefficients, effective_fx, PricingError, PremiumQuoteRequired, FxQuoteRequired, CollectionQuoteRequired
 from .integrations.clients import Playerok, Mrkt, Bot, normalized, gate, IntegrationError, ManualRequired
 from .integrations.mrkt_availability import gift_block_reason
 from .safety import is_nft_lot
+from .pricing_scope import can_price,collection_lot,quote_key,collection_scopes,scope
 from .operations import new_operation
 from .listing_prices import validate_price
 from .safety import RateLimited,PurchaseConfirmationPending
@@ -134,15 +135,15 @@ class Service:
         return {"count":len(result)}
 
     def quote(self, pair_id, force=False):
-        pair=self.db.get("pair",pair_id)
-        if not pair: raise ValueError("Пара не найдена")
+        pair=scope(self.db,pair_id)
+        if not pair: raise ValueError("Пара или коллекция не найдена")
         old=self.db.get("quote",pair_id)
         if (not force and old and old.get("available")
                 and gift_block_reason(old.get("gift") or {}) is None
                 and time.time()-old.get("fetched_at",0)<self.db.settings()["quote_interval"]): return old
         gifts=self.mrkt.search(pair["collection"],pair["model"])
         if not gifts:
-            self.db.put("quote",pair_id,{"available":False,"fetched_at":time.time(),"last_error":None,"failures":0,"next_check_at":time.time()+self.db.settings()["quote_interval"],"reason":"Нет предложений точной модели, доступных для немедленной передачи"})
+            self.db.put("quote",pair_id,{"available":False,"fetched_at":time.time(),"last_error":None,"failures":0,"next_check_at":time.time()+self.db.settings()["quote_interval"],"reason":"Нет доступных для передачи предложений выбранной коллекции или модели"})
             self.notice("no-model:"+pair_id,"Нет доступных подарков нужной модели",pair["collection"]+" — "+pair["model"])
             return None
         gift=gifts[0]
@@ -156,6 +157,7 @@ class Service:
         now=time.time();interval=self.db.settings()["quote_interval"]
         quotes={q["id"]:q for q in self.db.list("quote",100000)}
         pairs=[p for p in self.db.list("pair",100000) if p.get("enabled",True)]
+        pairs.extend(collection_scopes(self.db).values())
         pairs.sort(key=lambda p:(quotes.get(p["id"],{}).get("fetched_at",0),p["id"]))
         due=max(now,(self.db.get("throttle","mrkt") or {}).get("next",0))
         count=0
@@ -169,7 +171,7 @@ class Service:
         return {"queued":count,"interval":interval}
 
     def refresh_quote(self, pair_id, scheduled=False):
-        pair=self.db.get("pair",pair_id)
+        pair=scope(self.db,pair_id)
         if scheduled and (not pair or not pair.get("enabled",True)):return {"skipped":True}
         self.db.put("quote",pair_id,{"last_attempt_at":time.time()})
         try:
@@ -219,9 +221,13 @@ class Service:
 
     def estimate(self, lot_id, sale=None, quote=None, allow_network=True, refresh_premium=False, allow_stale_fx=False):
         lot=self.db.get("lot",lot_id)
-        if not is_nft_lot(lot): raise PricingError("Расчёт MRKT доступен только для Telegram NFT с привязкой коллекции и модели")
+        if not can_price(lot): raise PricingError("Для расчёта MRKT выберите коллекцию или коллекцию и модель")
         settings=self.db.settings()
-        quote=quote or self.db.get("quote",lot["pair_id"])
+        scope_id=quote_key(lot)
+        quote=quote or self.db.get("quote",scope_id)
+        if collection_lot(lot) and (not quote or not quote.get("available") or time.time()-quote.get("fetched_at",0)>settings["quote_max_age"]):
+            if not allow_network:raise CollectionQuoteRequired("Нужна проверка минимальной цены коллекции")
+            quote=self.quote(scope_id,True)
         fx=effective_fx(self.db)
         if not quote or not quote.get("available"): raise PricingError("Нет подходящих предложений MRKT")
         if time.time()-quote.get("fetched_at",0)>settings["quote_max_age"]: raise PricingError("Цена MRKT устарела")
@@ -232,7 +238,7 @@ class Service:
         strategy={**(self.db.get("strategy") or {}),**(lot.get("strategy") or {})}
         rivals=[]
         for c in self.db.list("competitor"):
-            if c.get("lot_id")!=lot_id or c.get("pair_id")!=lot["pair_id"] or not c.get("enabled",True): continue
+            if c.get("lot_id")!=lot_id or c.get("pair_id")!=scope_id or not c.get("enabled",True): continue
             if strategy.get("competitor_id") and c["id"]!=strategy["competitor_id"]: continue
             if not (c.get("confirmed") or c.get("auto_matched")) or c.get("status")!="APPROVED" or c.get("last_error"): continue
             if time.time()-c.get("fetched_at",0)>settings["competitor_interval"]*2: continue
@@ -247,7 +253,9 @@ class Service:
         mode=strategy.get("premium_mode","auto")
         schedule=self.db.get("promotion_schedule",lot_id) or {}
         include=bool(lot.get("premium_planned")) or mode=="include" or (mode=="auto" and (lot.get("premium",False) or schedule.get("enabled",False)))
-        count=int(strategy.get("premium_purchases_per_sale",1)) if include else 0
+        advertising=lot.get("lot_type")=="PROMOTIONAL"
+        if advertising:include=True
+        count=1 if advertising else int(strategy.get("premium_purchases_per_sale",1)) if include else 0
         if include:
             if refresh_premium and allow_network:self.db.put("premium_quotes",lot_id,{"prices":{}},merge=False)
             result=calculate_with_premium(purchase,transfer,profile,calculation_strategy,lambda price:D(self.premium_quote(lot_id,price,allow_network)["cost_rub"])*count,competitor,ton_rub=fx["rate"])
@@ -269,7 +277,7 @@ class Service:
         if sale is not None and lot.get("catalog_credit_id"):
             from .catalog_credit import adjust_snapshot as credit_snapshot
             result=credit_snapshot(self.db,lot["catalog_credit_id"],{**result,"ton_rub":fx["rate"]},profile)
-        return {**result,"lot_id":lot_id,"pair_id":lot["pair_id"],"ton_rub":fx["rate"],"quote_ton":quote["ton"],"fx_stale":fx_stale,
+        return {**result,"lot_id":lot_id,"pair_id":lot.get("pair_id"),"pricing_scope":"collection" if collection_lot(lot) else "model","pricing_quote_id":scope_id,"ton_rub":fx["rate"],"quote_ton":quote["ton"],"fx_stale":fx_stale,
                 "fee_profile":profile,"strategy":strategy,"quote_at":quote["fetched_at"],"fx_at":fx["source_at"],"estimated_at":time.time()}
 
     def preview_price(self, lot_id, allow_network=True):
@@ -296,7 +304,7 @@ class Service:
     def reprice(self, apply=True):
         settings=self.db.settings()
         for lot in self.db.list("lot"):
-            if not is_nft_lot(lot) or lot.get("status")!="APPROVED" or lot.get("missing"): continue
+            if not can_price(lot) or lot.get("status")!="APPROVED" or lot.get("missing"): continue
             try:
                 estimate=self.estimate(lot["id"])
                 self.db.put("estimate",lot["id"],{**estimate,"status":"READY"},merge=False)
@@ -359,6 +367,7 @@ class Service:
             if action=="price":
                 if payload.get("automatic"): gate(self.db,"repricing")
                 current=self.estimate(payload["lot_id"],refresh_premium=True)
+                if expected.get("pricing_quote_id") and current.get("pricing_quote_id")!=expected["pricing_quote_id"]:raise ValueError("Коллекция или модель изменились; получите новый расчёт")
                 if current["sale_price"]!=payload["price"] or current["quote_at"]!=expected.get("quote_at") or current["fx_at"]!=expected.get("fx_at") or D(current.get("promotion_rub",0))!=D(expected.get("promotion_rub",0)):
                     raise ValueError("Расчёт изменился; получите новый предварительный расчёт")
             elif action=="relist":

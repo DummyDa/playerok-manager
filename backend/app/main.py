@@ -19,6 +19,7 @@ from .auth import session,create_session,password_hash,password_valid
 from .operations import new_operation,submit,order_retry_reason
 from .order_dates import newest_orders,order_activity_at
 from .safety import WriteBlocked,gate,is_nft_lot
+from .pricing_scope import can_price,quote_key
 from .pricing import D,effective_fx
 from .listing_prices import validate_price
 from .web_security import budget,local_request
@@ -238,7 +239,7 @@ def create_app(db:Database|None=None):
     def lots()->dict:
         # Local edits update timestamps, but must never move items in the seller's list.
         records=sorted(db.list("lot"),key=lambda l:(bool(l.get("missing")),l.get("source_order",float("inf")),l["id"]))
-        return {"items":[{**l,"delivery_mode":"telegram_nft" if is_nft_lot(l) else "catalog" if l.get("delivery_mode")=="catalog" else "manual","estimate":db.get("estimate",l["id"]) if is_nft_lot(l) else None,"pair":db.get("pair",l.get("pair_id",""))} for l in records]}
+        return {"items":[{**l,"delivery_mode":"telegram_nft" if is_nft_lot(l) else "catalog" if l.get("delivery_mode")=="catalog" else "manual","estimate":db.get("estimate",l["id"]) if can_price(l) else None,"pair":db.get("pair",l.get("pair_id",""))} for l in records]}
 
     @app.post("/api/v1/lots/sync")
     def sync_lots()->dict:return {"task_id":db.enqueue("sync_lots")}
@@ -282,7 +283,10 @@ def create_app(db:Database|None=None):
             if lot.get("lot_type")=="TEMPORARY" or any(lot.get(key) for key in ("catalog_checkout_id","catalog_gift_id","catalog_credit_id","funding_purpose")):raise ValueError("Лот оплаты конкретного подарка нельзя сделать рекламным")
             collection=payload.catalog_collection.strip()
             if not collection:raise ValueError("Выберите коллекцию")
-            return db.put("lot",id,{"delivery_mode":"catalog","pair_id":None,"catalog_collection":collection,"lot_type":"PROMOTIONAL"})
+            if not db.get("fees",payload.fee_profile_id):raise ValueError("Профиль комиссий не найден")
+            result=db.put("lot",id,{**payload.model_dump(mode="json",exclude_none=True),"delivery_mode":"catalog","pair_id":None,"catalog_collection":collection,"lot_type":"PROMOTIONAL"})
+            key=quote_key(result);db.enqueue("quote",{"pair_id":key},key="quote:"+key)
+            return result
         if not db.get("pair",payload.pair_id) or not db.get("fees",payload.fee_profile_id):raise ValueError("Не найдена пара или профиль комиссий")
         data=payload.model_dump(mode="json",exclude_none=True)
         result=db.put("lot",id,data);db.enqueue("quote",{"pair_id":payload.pair_id},key="quote:"+payload.pair_id)
@@ -353,7 +357,7 @@ def create_app(db:Database|None=None):
         result=db.put("fees",id,payload.model_dump(mode="json"),False);db.enqueue("reprice");return result
 
     @app.get("/api/v1/pricing")
-    def pricing()->dict:return {"strategy":db.get("strategy") or schemas.Strategy().model_dump(mode="json"),"items":[e for e in db.list("estimate") if is_nft_lot(db.get("lot",e["id"]))]}
+    def pricing()->dict:return {"strategy":db.get("strategy") or schemas.Strategy().model_dump(mode="json"),"items":[e for e in db.list("estimate") if can_price(db.get("lot",e["id"]))]}
 
     @app.put("/api/v1/pricing/strategy")
     def strategy(payload:schemas.Strategy)->dict:
@@ -363,7 +367,7 @@ def create_app(db:Database|None=None):
     def calculation_premium(id:str,payload:schemas.PremiumCalculation)->dict:
         lot=db.get("lot",id)
         if not lot:raise HTTPException(404,"Лот не найден")
-        if not is_nft_lot(lot):raise ValueError("Расчёт премиума доступен для Telegram NFT с привязанной моделью")
+        if not can_price(lot):raise ValueError("Для расчёта премиума выберите коллекцию или модель")
         result=db.put("lot",id,payload.model_dump())
         db.put("estimate",id,{"status":"PENDING"},merge=False)
         return result
@@ -372,9 +376,9 @@ def create_app(db:Database|None=None):
     def preview_price(id:str)->dict:
         # Configuration failures remain immediate; external tariff reads belong to the worker.
         from .service import Service
-        from .pricing import PremiumQuoteRequired,FxQuoteRequired
+        from .pricing import PremiumQuoteRequired,FxQuoteRequired,CollectionQuoteRequired
         try:return Service(db).preview_price(id,allow_network=False)
-        except (PremiumQuoteRequired,FxQuoteRequired):return {"task_id":db.enqueue("preview_price",{"lot_id":id},key="preview_price:"+id)}
+        except (PremiumQuoteRequired,FxQuoteRequired,CollectionQuoteRequired):return {"task_id":db.enqueue("preview_price",{"lot_id":id},key="preview_price:"+id)}
 
     @app.get("/api/v1/competitors")
     def competitors()->dict:return {"items":db.list("competitor")}
@@ -420,7 +424,7 @@ def create_app(db:Database|None=None):
     def promotion_schedule(id:str,payload:schemas.PromotionSchedule)->dict:
         if not db.get("lot",id):raise ValueError("Лот не найден")
         result=db.put("promotion_schedule",id,{**payload.model_dump(mode="json"),"next_at":time.time()+payload.interval})
-        if is_nft_lot(db.get("lot",id)):db.enqueue("reprice_preview")
+        if can_price(db.get("lot",id)):db.enqueue("reprice_preview")
         return result
 
     @app.put("/api/v1/promotions/schedules/bulk")
@@ -439,7 +443,7 @@ def create_app(db:Database|None=None):
                 if row:row.data={**row.data,**data};row.updated=now
                 else:s.add(Entity(kind="promotion_schedule",id=id,data=data))
         db.log("promotion_schedules","Расписания поднятий сохранены",str(len(ids)))
-        if any(is_nft_lot(db.get("lot",id)) for id in ids):db.enqueue("reprice_preview")
+        if any(can_price(db.get("lot",id)) for id in ids):db.enqueue("reprice_preview")
         return {"count":len(ids)}
 
     @app.delete("/api/v1/promotions/{id}/schedule")
@@ -448,7 +452,7 @@ def create_app(db:Database|None=None):
             row=s.get(Entity,("promotion_schedule",id))
             if row:s.delete(row)
         db.log("promotion_schedule_deleted","Расписание поднятий удалено",id)
-        if is_nft_lot(db.get("lot",id)):db.enqueue("reprice_preview")
+        if can_price(db.get("lot",id)):db.enqueue("reprice_preview")
         return {"deleted":True}
 
     @app.post("/api/v1/promotions/{id}/preview")

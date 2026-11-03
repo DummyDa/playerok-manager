@@ -293,17 +293,18 @@ class Mrkt:
         if throttle.get("rate_limits"):self.db.put("throttle","mrkt",{"rate_limits":0})
         return response.json()
 
-    def search(self, collection, model):
+    def search(self, collection, model=""):
+        model=str(model or "").strip()
         def name(g, key):
             v = g.get(key+"Name") or g.get(key)
             return str(v.get("name","") if isinstance(v,dict) else v or "").strip().casefold()
         cursor, seen = "", set()
         for _ in range(10):
-            result = self.request("POST","/gifts/saling",{"collectionNames":[collection],"modelNames":[model],"backdropNames":[],"symbolNames":[],
+            result = self.request("POST","/gifts/saling",{"collectionNames":[collection],"modelNames":[model] if model else [],"backdropNames":[],"symbolNames":[],
                 "ordering":"Price","lowToHigh":True,"maxPrice":None,"minPrice":None,"mintable":None,"number":None,"count":100,"cursor":cursor,"query":None,"promotedFirst":False,
                 "isTransferable":True,"isPremarket":False,"giftType":"Upgraded"})
             gifts = result.get("gifts",[]) if isinstance(result,dict) else []
-            matches = [g for g in gifts if name(g,"collection")==collection.strip().casefold() and name(g,"model")==model.strip().casefold()
+            matches = [g for g in gifts if name(g,"collection")==collection.strip().casefold() and (not model or name(g,"model")==model.casefold())
                        and g.get("salePrice") is not None and D(g["salePrice"])>0 and not g.get("isSold",False)
                        and gift_block_reason(g) is None]
             if matches:
