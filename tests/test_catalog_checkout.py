@@ -231,3 +231,34 @@ def test_cover_source_change_is_scoped_to_myth_mask():
     assert checkout.cover_source_url({"slug":"ChillFlame-5","model":"Ghost Light"})=="https://nft.fragment.com/gift/chillflame-5.webp"
     assert checkout.cover_source_url({"slug":"MythMask-1","model":"A/B"}).endswith("A%2FB.png")
     with pytest.raises(ValueError):checkout.cover_source_url({"slug":"MythMask-1"})
+
+
+def test_created_listing_waits_for_moderation_then_starts_payment_timer(db,prepared):
+    service,gift,raw,client=prepared
+    client.create.return_value={"item_id":"lot","slug":"catalog-lot","status":"PENDING_APPROVAL"}
+    key=checkout.request_checkout(db,gift,price(db,"4")["sale_price"])
+    checkout.create(service,key)
+    record=db.get("catalog_checkout",key)
+    assert record["state"]=="MODERATING" and record["expires_at"] is None
+    assert checkout.request_checkout(db,gift,record["price_rub"])==key
+    client.item.return_value={"id":"lot","status":"PENDING_APPROVAL"}
+    checkout.moderation(service,key)
+    assert db.get("catalog_checkout",key)["state"]=="MODERATING"
+    db.put("catalog_checkout",key,{"next_moderation_at":0})
+    client.item.return_value={"id":"lot","status":"APPROVED"}
+    checkout.moderation(service,key)
+    record=db.get("catalog_checkout",key)
+    assert record["state"]=="READY" and 895<record["expires_at"]-time.time()<=900
+    client.create.assert_called_once()
+
+
+def test_moderation_survives_restart_and_rejection_is_not_ready(db,prepared):
+    service,gift,raw,client=prepared
+    client.create.return_value={"item_id":"lot","slug":"catalog-lot","status":"PENDING_APPROVAL"}
+    key=checkout.request_checkout(db,gift,price(db,"4")["sale_price"])
+    checkout.create(service,key);recover(db)
+    assert db.get("catalog_checkout",key)["state"]=="MODERATING"
+    client.item.return_value={"id":"lot","status":"DECLINED"}
+    checkout.moderation(service,key)
+    assert db.get("catalog_checkout",key)["state"]=="FAILED"
+    client.create.assert_called_once()

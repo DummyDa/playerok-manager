@@ -1,0 +1,8 @@
+/* Checkout status colors inherit the active catalogue palette. */
+#check-result.checkout-status:not(:empty){padding:14px 16px;border:1px solid color-mix(in srgb,var(--accent,#bdd5f2) 45%,transparent);border-radius:16px;background:color-mix(in srgb,var(--accent,#bdd5f2) 9%,var(--bg,#0b141d));color:var(--text,#edf4ff);font-size:14px;line-height:1.55;transition:background-color .25s,border-color .25s;}
+#check-result.checkout-status[data-checkout-step="ready"]{border-color:var(--accent,#bdd5f2);background:color-mix(in srgb,var(--accent,#bdd5f2) 17%,var(--bg,#0b141d));font-weight:700;}
+#check-result.checkout-status-changed{animation:checkout-status-reveal .65s ease-out;}
+@keyframes checkout-status-reveal{from{transform:translateY(4px);box-shadow:0 0 0 5px color-mix(in srgb,var(--accent,#bdd5f2) 24%,transparent);}to{transform:translateY(0);box-shadow:0 0 0 0 transparent;}}
+@media(prefers-reduced-motion:reduce){#check-result.checkout-status-changed{animation:none;}#check-result.checkout-status{transition:none;}}
+
+#check-result.checkout-status.error{border-color:var(--danger,#ffb6a7);color:var(--danger,#ffb6a7);}

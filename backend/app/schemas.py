@@ -166,3 +166,7 @@ class ExecuteInput(Strict):operation_id:str
 class OperationResolution(Strict):
     resolution:Literal["CONFIRMED","NOT_EXECUTED"]
     evidence:str=Field(min_length=10,max_length=1000)
+
+
+class ManualFulfillment(Strict):
+    purchase_rub:Decimal|None=Field(default=None,gt=0,le=10000000)

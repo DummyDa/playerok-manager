@@ -50,6 +50,8 @@ class Worker:
         id,kind,payload=claimed
         self.db.put("worker","main",{"status":"BUSY","task":kind,"heartbeat":time.time(),"pid":os.getpid()})
         try:
+            from . import mrkt_retry
+            if kind=="process_order" and payload.get("rate_limit_retries") and mrkt_retry.expired(self.db,payload.get("order_id")):raise RateLimited("Истекли пять минут ожидания MRKT",time.time())
             result=self.dispatch(kind,payload)
             with self.db.tx() as s:
                 task=s.get(Task,id);task.state="COMPLETE";task.dedupe=None;task.lease=None
@@ -57,21 +59,24 @@ class Worker:
         except Exception as exc:
             error=self.db.redact(exc)
             rate_wait=kind=="process_order" and isinstance(exc,RateLimited)
-            waiting=rate_wait and int(payload.get("rate_limit_retries",0))<5
+            from . import mrkt_retry
+            until=mrkt_retry.deadline(self.db,payload.get("order_id"),start=True) if rate_wait else None
+            waiting=rate_wait and time.time()<until
             previous_order=self.db.get("order",payload.get("order_id")) if rate_wait else None
             previous_credit=self.db.get("catalog_credit_payment",previous_order["catalog_credit_id"]) if previous_order and previous_order.get("catalog_credit_id") else None
-            if rate_wait and not waiting:error="MRKT недоступен после 5 повторов. Нужна ручная обработка: "+error
+            if rate_wait and not waiting:error="MRKT недоступен в течение 5 минут. Нужна ручная обработка: "+error
             with self.db.tx() as s:
                 task=s.get(Task,id);task.error=error;task.lease=None
                 if waiting:task.payload={**payload,"rate_limit_retries":int(payload.get("rate_limit_retries",0))+1}
                 # Money tasks never retry blindly; all public write paths use operations.
-                retry=waiting or (kind not in {"execute","process_order","telegram_auth","buyer_message","catalog_message","catalog_create","grant_message","grant_execute","grant_refund"} and task.attempts<4)
+                retry=waiting or (kind not in {"execute","process_order","telegram_auth","buyer_message","catalog_message","catalog_create","grant_message","grant_execute","grant_refund","manual_review_complete"} and task.attempts<4)
                 task.state="READY" if retry else "FAILED"
-                task.due=max(time.time()+1,exc.retry_at+0.5) if waiting else time.time()+min(300,10*2**min(task.attempts,8))
+                task.due=min(until,max(time.time()+1,exc.retry_at+0.5)) if waiting else time.time()+min(300,10*2**min(task.attempts,8))
                 if retry:
                     for service in ("playerok","mrkt"):
                         task.due=max(task.due,(self.db.get("throttle",service) or {}).get("next",0))
                     if kind=="quote":task.due=max(task.due,(self.db.get("quote",payload["pair_id"]) or {}).get("next_check_at",0))
+                if waiting:task.due=min(task.due,until)
                 if not retry:task.dedupe=None
             if waiting:self.db.put("order",payload["order_id"],{"reason":"Ожидаем разрешённое время проверки. Повторно оплачивать не нужно."})
             if kind=="process_order" and not waiting:self.db.put("order",payload["order_id"],{"stage":"MANUAL","reason":error})
@@ -94,6 +99,12 @@ class Worker:
         if revision!=getattr(self,"runtime_revision",None):
             from .integrations.clients import Mrkt
             self.service.mrkt=Mrkt(self.db);self.runtime_revision=revision
+        if kind=="catalog_moderation":
+            from .catalog_checkout import moderation
+            return moderation(self.service,p["checkout_id"])
+        if kind=="manual_review_complete":
+            from .manual_fulfillment import confirm
+            return confirm(self.service,p["order_id"])
         if kind=="telegram_auth":
             from .telegram_login import step
             result=step(self.db,p["flow_id"],p["action"])

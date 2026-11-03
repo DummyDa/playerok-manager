@@ -362,7 +362,7 @@ def test_silent_manual_completion_stops_work_without_fabricating_delivery(db,cli
     db.put("operation","waiting",{"state":"QUEUED","action":"order.withdraw","order_id":oid})
     db.put("catalog_message","message",{"state":"QUEUED","credit_id":cid})
     db.enqueue("execute",{"operation_id":"waiting"},key="silent-test")
-    endpoint=f"/api/v1/orders/{oid}/complete-manually"
+    endpoint=f"/api/v1/orders/{oid}/complete-silently"
     assert client.post(endpoint).status_code==403
     assert client.post(endpoint,headers=headers).status_code==200
     assert db.get("order",oid)["stage"]=="COMPLETE"
@@ -380,7 +380,7 @@ def test_silent_completion_rejects_active_external_request(db,client):
     headers=authenticate(client)
     db.put("order","busy",{"stage":"MANUAL"})
     db.put("operation","send",{"state":"SUBMITTED","order_id":"busy"})
-    assert client.post("/api/v1/orders/busy/complete-manually",headers=headers).status_code==400
+    assert client.post("/api/v1/orders/busy/complete-silently",headers=headers).status_code==400
     assert db.get("order","busy")["stage"]=="MANUAL"
 
 
@@ -396,3 +396,25 @@ def test_catalog_collection_binding_does_not_enable_direct_purchase(db,client):
     listed=next(row for row in client.get("/api/v1/lots").json()["items"] if row["id"]=="ad")
     assert listed["delivery_mode"]=="catalog" and listed["pair"] is None
     assert client.patch("/api/v1/lots/ad/binding",headers=headers,json={"delivery_mode":"catalog","catalog_collection":" "}).status_code==400
+
+
+def test_manual_review_completion_queues_settlement_and_freezes_purchase(db,client):
+    assert client.post("/api/v1/orders/delivery/complete-manually").status_code==401
+    headers=authenticate(client)
+    db.put("catalog_credit_payment","wallet",{"state":"REVIEW","paid_rub":"500","fulfillment_order_id":"delivery","selected":{"id":"gift","slug":"Gift-1"}})
+    db.put("order","delivery",{"stage":"MANUAL","catalog_credit_id":"wallet"})
+    assert client.post("/api/v1/orders/delivery/complete-manually",json={}).status_code==403
+    response=client.post("/api/v1/orders/delivery/complete-manually",headers=headers,json={"purchase_rub":"400"})
+    assert response.status_code==200 and response.json()["task_id"]
+    order=db.get("order","delivery")
+    assert order["manual_hold"] and order["owner_delivery_requested"] and order["owner_purchase_rub"]=="400"
+    assert order["stage"]=="MANUAL" and not db.list("ledger")
+
+
+def test_manual_review_completion_rejects_submitted_purchase(db,client):
+    headers=authenticate(client)
+    db.put("catalog_credit_payment","wallet",{"state":"REVIEW","paid_rub":"500","fulfillment_order_id":"delivery","selected":{"id":"gift","slug":"Gift-1"}})
+    db.put("order","delivery",{"stage":"MANUAL","catalog_credit_id":"wallet"})
+    db.put("operation","buy",{"state":"SUBMITTED","action":"order.buy","order_id":"delivery"})
+    assert client.post("/api/v1/orders/delivery/complete-manually",headers=headers,json={"purchase_rub":"400"}).status_code==400
+    assert not db.get("order","delivery").get("owner_delivery_requested")

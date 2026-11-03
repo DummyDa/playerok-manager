@@ -298,7 +298,8 @@ def failed_order(db,oid,error,submitted=False):
     if not credit or credit["state"]=="DELETED" or credit.get("fulfillment_order_id")!=oid or any(p.get("order_id")==oid for p in purchases(credit)):return
     ops=[op for op in db.list("operation",100000) if op.get("order_id")==oid]
     uncertain=submitted or order.get("mrkt_gift_id") or any(op.get("submitted_at") or op.get("state") in {"UNKNOWN","SUBMITTED","COMPLETE","BROWSER_WAIT"} for op in ops)
-    needs_review=uncertain or any(op.get("rate_limit_retries",0)>=5 for op in ops)
+    from .mrkt_retry import expired
+    needs_review=uncertain or expired(db,oid)
     values={"state":"REVIEW","notice":"Результат закупки/передачи требует сверки: "+str(error)} if needs_review else {"state":"AWAITING_SELECTION","reservation_rub":"0","notice":str(error)}
     if save_current(db,credit,values,{"action":"REVIEW_REQUIRED" if needs_review else "FULFILLMENT_STOPPED","order_id":oid}) and not needs_review:
         from .catalog_messages import choice_unavailable

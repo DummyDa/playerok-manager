@@ -14,7 +14,7 @@ from .integrations.mrkt_availability import gift_block_reason
 from .pricing import D
 from .safety import gate, ManualRequired,RateLimited
 
-ACTIVE={"QUEUED","CREATING","UNKNOWN","READY","EXPIRING"}
+ACTIVE={"QUEUED","CREATING","MODERATING","UNKNOWN","READY","EXPIRING"}
 
 def notify_result(db,record):
     from .funded_orders import checkout_result
@@ -151,8 +151,10 @@ def create(service, key):
         if not result.get("item_id") or not result.get("slug"):raise ValueError("Playerok не подтвердил созданный лот")
         expires=time.time()+900
         db.put("lot",result["item_id"],{**binding,"title":title,"description":description,"price":estimate["sale_price"],"slug":result["slug"],"status":result.get("status") or "PENDING_APPROVAL","url":"https://playerok.com/products/"+result["slug"],"expires_at":expires})
-        db.put("catalog_checkout",key,{"state":"READY","lot_id":result["item_id"],"url":"https://playerok.com/products/"+result["slug"],"price_rub":estimate["sale_price"],"expires_at":expires})
-        db.enqueue("catalog_expire",key="catalog_expire:"+key,due=expires)
+        approved=result.get("status")=="APPROVED"
+        db.put("catalog_checkout",key,{"state":"READY" if approved else "MODERATING","lot_id":result["item_id"],"url":"https://playerok.com/products/"+result["slug"],"price_rub":estimate["sale_price"],"expires_at":expires if approved else None,"moderation_started_at":time.time(),"notice":None if approved else "Лот создан и проверяется Playerok. После одобрения появится ссылка для оплаты."})
+        if approved:db.enqueue("catalog_expire",key="catalog_expire:"+key,due=expires)
+        else:schedule_moderation(db,db.get("catalog_checkout",key))
         notify_result(db,db.get("catalog_checkout",key))
     except Exception as exc:
         current=db.get("catalog_checkout",key) or {}
@@ -167,6 +169,8 @@ def create(service, key):
 def expire(service):
     db=service.db
     for record in db.list("catalog_checkout",100000):
+        if record.get("state")=="MODERATING":
+            schedule_moderation(db,record);continue
         if record.get("state")=="QUEUED":
             schedule_create(db,record)
             continue
@@ -193,3 +197,37 @@ def expire(service):
         db.put("catalog_checkout",record["id"],{"state":"EXPIRED"})
         db.put("lot",lot["id"],{"missing":True,"status":"EXPIRED"})
         notify_result(db,db.get("catalog_checkout",record["id"]))
+
+
+def schedule_moderation(db,record):
+    due=max(time.time(),record.get("next_moderation_at",0))
+    db.enqueue("catalog_moderation",{"checkout_id":record["id"]},key="catalog-moderation:"+record["id"]+":"+str(record.get("moderation_checks",0)),due=due)
+
+
+def moderation(service,key):
+    db=service.db;record=db.get("catalog_checkout",key)
+    if not record or record.get("state")!="MODERATING":return
+    if record.get("next_moderation_at",0)>time.time():schedule_moderation(db,record);return
+    lot=db.get("lot",record.get("lot_id")) or {}
+    try:
+        fresh=Playerok(db).item(lot["slug"])
+        if str(fresh.get("id"))!=lot["id"]:raise ValueError("Не совпадает ID проверяемого лота")
+        status=fresh.get("status")
+        db.put("lot",lot["id"],{"status":status or "PENDING_APPROVAL"})
+        if status=="APPROVED":
+            expires=time.time()+900
+            db.put("lot",lot["id"],{"expires_at":expires})
+            db.put("catalog_checkout",key,{"state":"READY","expires_at":expires,"notice":None,"error":None})
+            db.enqueue("catalog_expire",key="catalog_expire:"+key,due=expires)
+            notify_result(db,db.get("catalog_checkout",key));return
+        if status=="SOLD" or fresh.get("buyer"):
+            db.put("catalog_checkout",key,{"state":"PAID","notice":"Лот уже оплачен"});return
+        if status in {"DECLINED","BLOCKED","REMOVED","DELETED","DISCONTINUED"}:
+            db.put("catalog_checkout",key,{"state":"FAILED","error":"Playerok не одобрил лот. Свяжитесь с продавцом в чате Playerok."})
+            notify_result(db,db.get("catalog_checkout",key));return
+    except Exception as exc:
+        db.put("catalog_checkout",key,{"moderation_error":db.redact(exc)})
+    checks=int(record.get("moderation_checks",0))+1
+    due=max(time.time()+5,(db.get("throttle","playerok") or {}).get("next",0))
+    db.put("catalog_checkout",key,{"next_moderation_at":due,"moderation_checks":checks})
+    schedule_moderation(db,db.get("catalog_checkout",key))

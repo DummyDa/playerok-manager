@@ -24,7 +24,7 @@ def real(db,monkeypatch):
     mrkt.buy.return_value={"id":"owned-gift"}
     mrkt.saved.return_value={"msg_id":1234,"can_transfer_at":0,"transfer_stars":25}
     mrkt.owner.return_value=123;mrkt.transfer.return_value=123
-    client=Mock();client.premium.return_value={"id":"premium","price":10};client.create.return_value={"item_id":"topup-lot","slug":"pay-extra","status":"APPROVED"}
+    client=Mock();client.publication_premium.return_value={"id":"premium","price":10};client.create.return_value={"item_id":"topup-lot","slug":"pay-extra","status":"APPROVED"}
     monkeypatch.setattr("backend.app.service.Playerok",lambda _:client)
     monkeypatch.setattr("backend.app.integrations.clients.Playerok",lambda _:client)
     monkeypatch.setattr(catalog_checkout,"Playerok",lambda _:client)
@@ -507,7 +507,7 @@ def test_repeated_promo_payments_reuse_code_and_preserve_balance(db,real):
     assert len(db.list("catalog_credit_payment"))==2
 
 
-def test_purchase_confirmation_rate_limit_retries_read_only_five_times(db,real):
+def test_purchase_confirmation_rate_limit_retries_read_only_for_five_minutes(db,real):
     from backend.app.safety import PurchaseConfirmationPending,RateLimited
     service,gift,raw,client=real
     account,_=credit.create(db,"1000","buyer")
@@ -520,9 +520,12 @@ def test_purchase_confirmation_rate_limit_retries_read_only_five_times(db,real):
     assert db.get("operation",oid+":buy")["state"]=="VERIFYING"
     assert db.get("catalog_credit_payment",account["id"])["state"]=="EXECUTING"
     service.mrkt.owned_gift.side_effect=RateLimited("inventory busy",time.time()+3)
-    for _ in range(5):service.confirm_purchase(oid+":buy")
+    for _ in range(6):service.confirm_purchase(oid+":buy")
+    assert db.get("operation",oid+":buy")["state"]=="VERIFYING"
+    db.put("order",oid,{"mrkt_retry_deadline":time.time()-1})
+    service.confirm_purchase(oid+":buy")
     assert db.get("operation",oid+":buy")["state"]=="UNKNOWN"
-    assert db.get("operation",oid+":buy")["rate_limit_retries"]==5
+    assert db.get("operation",oid+":buy")["rate_limit_retries"]==7
     assert db.get("order",oid)["stage"]=="MANUAL"
     service.mrkt.buy.assert_called_once()
 
@@ -546,7 +549,7 @@ def test_purchase_confirmation_can_finish_without_second_purchase(db,real):
     service.mrkt.buy.assert_called_once()
 
 
-def test_safe_unsubmitted_rate_limits_have_five_retries(db,real):
+def test_safe_unsubmitted_rate_limits_stop_at_deadline_without_another_buy(db,real):
     from backend.app.safety import RateLimited
     service,gift,raw,client=real
     account,_=credit.create(db,"1000","buyer")
@@ -559,19 +562,21 @@ def test_safe_unsubmitted_rate_limits_have_five_retries(db,real):
         service.execute(oid+":buy")
         assert db.get("operation",oid+":buy")["state"]=="QUEUED"
         assert db.get("order",oid)["stage"]!="MANUAL"
+    db.put("order",oid,{"mrkt_retry_deadline":time.time()-1})
     service.execute(oid+":buy")
     assert db.get("operation",oid+":buy")["state"]=="FAILED"
     assert db.get("order",oid)["stage"]=="MANUAL"
-    assert service.mrkt.buy.call_count==6
+    assert service.mrkt.buy.call_count==5
 
 
-def test_process_order_rate_limit_stops_after_five_retries(db,real,monkeypatch):
+def test_process_order_rate_limit_stops_after_five_minutes(db,real,monkeypatch):
     from backend.app.safety import RateLimited
     service,gift,raw,client=real
     account,_=credit.create(db,"1000","buyer")
     credit.choose(db,account,gift,price(db,"4")["sale_price"],"buyer")
     credit.fulfill(service,account["id"])
     oid=db.get("catalog_credit_payment",account["id"])["fulfillment_order_id"]
+    db.put("order",oid,{"mrkt_retry_deadline":time.time()-1})
     worker=Worker(db);payload={"order_id":oid,"rate_limit_retries":5}
     task_id=db.enqueue("process_order",payload,key="final-rate-attempt")
     monkeypatch.setattr(worker,"claim",lambda:(task_id,"process_order",payload))
@@ -580,7 +585,7 @@ def test_process_order_rate_limit_stops_after_five_retries(db,real,monkeypatch):
     assert db.get("order",oid)["stage"]=="MANUAL"
     wallet=db.get("catalog_credit_payment",account["id"])
     assert wallet["state"]=="REVIEW" and credit.D(wallet["reservation_rub"])>0
-    assert "5 повторов" in wallet["notice"]
+    assert "5 минут" in wallet["notice"]
 
 
 @pytest.mark.parametrize("model", ["", "Ghost Light"])
@@ -608,3 +613,65 @@ def test_promotional_scope_in_link_and_reused_code(db,real,model):
     current=db.get("catalog_credit_payment",wallet["id"])
     assert current["collection"]=="Liberty Figure" and current["model"]==""
     assert len(db.list("catalog_credit_payment"))==1
+
+
+def test_review_manual_delivery_settles_all_payments_and_profit_without_rebuy(db,real):
+    from backend.app.manual_fulfillment import prepare,confirm
+    from backend.app.catalog_orders import grouped_orders
+    service,gift,raw,client=real
+    account,_=credit.create(db,"1000","buyer")
+    credit.choose(db,account,gift,price(db,"4")["sale_price"],"buyer")
+    credit.fulfill(service,account["id"])
+    oid=db.get("catalog_credit_payment",account["id"])["fulfillment_order_id"]
+    service.process_order(oid);service.execute(oid+":buy")
+    db.put("order",oid,{"stage":"MANUAL"})
+    db.put("catalog_credit_payment",account["id"],{"state":"REVIEW"})
+    payments={}
+    for id,kind,amount in [("root","ORIGINAL","700"),("extra","TOPUP","300")]:
+        payments[id]={"id":id,"status":"PAID","sale_rub":amount,"buyer_id":"buyer-id","chat_id":"chat"}
+        db.put("catalog_credit_receipt",id,{"credit_id":account["id"],"kind":kind,"accepted":True,"status":"PAID","amount_rub":amount,"buyer_id":"buyer-id","chat_id":"chat","revision":1 if kind=="TOPUP" else 0})
+    db.put("catalog_credit_payment",account["id"],{"initial_allocation_rub":"700","source":"playerok_promotional"})
+    db.put("lot","ad",{"lot_type":"PROMOTIONAL","pair_id":"ad-pair"})
+    db.put("order","root",{"catalog_root_credit_id":account["id"],"lot_id":"ad","created_at":0})
+    db.put("catalog_credit_receipt","root",{"lot_id":"ad","premium_pending":True})
+    client.publication_premium.return_value={"id":"publication","price":25}
+    client.orders.side_effect=lambda deal_id=None:[payments[deal_id]]
+    client.set_deal_status.side_effect=lambda id,status:payments[id].update(status=status)
+    target=prepare(db,"root")
+    assert target==oid
+    result=confirm(service,target)
+    assert result["operation_id"]==oid+":mark_sent"
+    service.execute(result["operation_id"])
+    assert db.get("order",oid)["stage"]=="COMPLETE"
+    assert all(p["status"]=="SENT" for p in payments.values())
+    assert len([m for m in db.list("catalog_message") if m["event"].startswith("delivered:")])==1
+    group=next(o for o in grouped_orders(db,db.list("order"),db.list("ledger")) if o.get("catalog_group"))
+    assert group["profit_rub"] is not None and credit.D(group["totals"]["revenue"])==1000
+    assert credit.D(group["totals"]["promotion"])==25
+    assert credit.D(group["profit_rub"])==credit.D("543.50")
+    assert len([e for e in db.list("ledger") if e["type"]=="purchase"])==1
+    service.mrkt.buy.assert_called_once();service.mrkt.transfer.assert_not_called()
+    confirm(service,oid)
+    from backend.app.catalog_messages import send
+    message=next(m for m in db.list("catalog_message") if m["event"].startswith("delivered:"))
+    client.send_chat_message.return_value={"id":"sent-message"}
+    send(service,message["id"]);send(service,message["id"])
+    client.send_chat_message.assert_called_once()
+    assert client.set_deal_status.call_count==2
+
+
+def test_review_manual_purchase_requires_actual_cost_and_can_finish_without_automatic_purchase(db,real):
+    from backend.app.manual_fulfillment import prepare,confirm
+    service,gift,raw,client=real
+    account,_=credit.create(db,"1000","buyer")
+    credit.choose(db,account,gift,price(db,"4")["sale_price"],"buyer");credit.fulfill(service,account["id"])
+    oid=db.get("catalog_credit_payment",account["id"])["fulfillment_order_id"]
+    db.put("order",oid,{"stage":"MANUAL"});db.put("catalog_credit_payment",account["id"],{"state":"REVIEW"})
+    prepare(db,oid)
+    with pytest.raises(ValueError,match="фактическую закупку"):confirm(service,oid)
+    assert not db.list("ledger")
+    prepare(db,oid,"450.25");confirm(service,oid);service.execute(oid+":mark_sent")
+    assert db.get("order",oid)["stage"]=="COMPLETE"
+    expense=next(e for e in db.list("ledger") if e["type"]=="purchase")
+    assert expense["amount_rub"]=="450.25" and expense["source"]=="owner_attestation"
+    service.mrkt.buy.assert_not_called();service.mrkt.transfer.assert_not_called()

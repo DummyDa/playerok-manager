@@ -17,6 +17,7 @@ from .pricing_scope import can_price,collection_lot,quote_key,collection_scopes,
 from .operations import new_operation
 from .listing_prices import validate_price
 from .safety import RateLimited,PurchaseConfirmationPending
+from . import mrkt_retry
 
 def day_start():
     local=datetime.now(timezone(timedelta(hours=3))).replace(hour=0,minute=0,second=0,microsecond=0)
@@ -205,18 +206,18 @@ class Service:
     def premium_quote(self, lot_id, price, allow_network=True):
         price=D(price)
         if price<1 or price!=price.to_integral_value():raise PricingError("Для тарифа премиума нужна целая цена продажи")
-        key=str(int(price));record=self.db.get("premium_quotes",lot_id) or {};prices=record.get("prices",{})
-        saved=prices.get(key)
+        key=str(int(price));record=self.db.get("premium_quotes",lot_id) or {};prices=record.get("prices",{}) if record.get("purpose")=="publication_v2" else {}
+        saved=prices.get(key) if record.get("purpose")=="publication_v2" else None
         if saved and time.time()-saved.get("checked_at",0)<900:return saved
         if not allow_network:raise PremiumQuoteRequired("Нужна проверка актуального тарифа премиума")
         try:
-            tariff=Playerok(self.db).premium(lot_id,int(price))
+            tariff=Playerok(self.db).publication_premium(lot_id,int(price))
             if not tariff.get("id") or tariff.get("price") is None or D(tariff["price"])<0:raise ValueError("Missing premium tariff")
             saved={"cost_rub":str(D(tariff["price"])),"price":int(price),"tariff_id":str(tariff["id"]),"checked_at":time.time()}
         except Exception:raise PricingError("Не удалось получить тариф премиума Playerok. Расчёт прибыли без него запрещён.")
         prices={k:v for k,v in prices.items() if time.time()-v.get("checked_at",0)<900}
         prices[key]=saved;prices=dict(sorted(prices.items(),key=lambda row:row[1]["checked_at"],reverse=True)[:32])
-        self.db.put("premium_quotes",lot_id,{"prices":prices},merge=False)
+        self.db.put("premium_quotes",lot_id,{"prices":prices,"purpose":"publication_v2"},merge=False)
         return saved
 
     def estimate(self, lot_id, sale=None, quote=None, allow_network=True, refresh_premium=False, allow_stale_fx=False):
@@ -275,6 +276,8 @@ class Service:
             from .funded_orders import adjust_snapshot
             result=adjust_snapshot(self.db,{"funding_grant_id":lot["funding_grant_id"]},{**result,"ton_rub":fx["rate"]})
         if sale is not None and lot.get("catalog_credit_id"):
+            from .catalog_premium import refresh as refresh_catalog_premium
+            refresh_catalog_premium(self,limit=12,credit_id=lot["catalog_credit_id"])
             from .catalog_credit import adjust_snapshot as credit_snapshot
             result=credit_snapshot(self.db,lot["catalog_credit_id"],{**result,"ton_rub":fx["rate"]},profile)
         return {**result,"lot_id":lot_id,"pair_id":lot.get("pair_id"),"pricing_scope":"collection" if collection_lot(lot) else "model","pricing_quote_id":scope_id,"ton_rub":fx["rate"],"quote_ton":quote["ton"],"fx_stale":fx_stale,
@@ -360,6 +363,7 @@ class Service:
         if not op or op.get("state")!="QUEUED": return
         action,payload,expected=op["action"],op["payload"],op.get("expected",{})
         try:
+            if op.get("rate_limit_retries") and mrkt_retry.expired(self.db,op.get("order_id")):raise RateLimited("Истекли пять минут ожидания MRKT",time.time(),safe_to_retry=True)
             gate(self.db)
             if not action.startswith("order.") and op.get("expires",0)<time.time():raise ValueError("Предварительный расчёт истёк до исполнения")
             client=None
@@ -471,24 +475,25 @@ class Service:
     def wait_rate_operation(self,op,exc,confirmation=False):
         current=self.db.get("operation",op["id"]) or op
         count=int(current.get("rate_limit_retries",0))
-        if count>=5:return False
+        until=mrkt_retry.deadline(self.db,op.get("order_id"),start=True) or current.get("mrkt_retry_deadline") or time.time()+300
+        if time.time()>=until:return False
         count+=1
-        due=max(time.time()+min(30,2**count),exc.retry_at+0.5)
-        values={"state":"VERIFYING" if confirmation else "QUEUED","error":None,"retry_at":due,"rate_limit_retries":count}
+        due=min(until,max(time.time()+min(30,2**min(count,5)),exc.retry_at+0.5))
+        values={"state":"VERIFYING" if confirmation else "QUEUED","error":None,"retry_at":due,"rate_limit_retries":count,"mrkt_retry_deadline":until}
         if not confirmation:values["submitted_at"]=None
         self.db.put("operation",op["id"],values)
         self.db.enqueue("confirm_purchase" if confirmation else "execute",{"operation_id":op["id"]},key="rate-wait:"+op["id"]+":"+str(count),due=due)
         if op.get("order_id"):
-            self.db.put("order",op["order_id"],{"reason":f"MRKT занят. Ожидаем повтор {count}/5; повторно оплачивать не нужно."})
+            self.db.put("order",op["order_id"],{"reason":"MRKT занят. Повторяем проверку в течение пяти минут; повторно оплачивать не нужно."})
         return True
 
     def fail_operation(self,op,exc,submitted):
         op_id=op["id"]
-        exhausted=isinstance(exc,RateLimited) and (self.db.get("operation",op_id) or {}).get("rate_limit_retries",0)>=5
+        exhausted=isinstance(exc,RateLimited) and (mrkt_retry.expired(self.db,op.get("order_id")) or time.time()>=(self.db.get("operation",op_id) or {}).get("mrkt_retry_deadline",float("inf")))
         order=self.db.get("order",op.get("order_id")) if op.get("order_id") else None
         cid=(order or {}).get("catalog_credit_id")
         previous_credit=self.db.get("catalog_credit_payment",cid) if cid else None
-        if exhausted:exc=RuntimeError("MRKT недоступен после 5 повторов. Нужна ручная обработка: "+str(exc))
+        if exhausted:exc=RuntimeError("MRKT недоступен в течение 5 минут. Нужна ручная обработка: "+str(exc))
         self.db.put("operation",op_id,{"state":"UNKNOWN" if submitted else "FAILED","error":self.db.redact(exc)})
         if op.get("order_id"):self.db.put("order",op["order_id"],{"stage":"MANUAL","reason":self.db.redact(exc)})
         if op.get("order_id"):
@@ -507,6 +512,7 @@ class Service:
         op=self.db.get("operation",op_id)
         if not op or op.get("state")!="VERIFYING" or op.get("action")!="order.buy":return
         try:
+            if mrkt_retry.expired(self.db,op.get("order_id")):raise RateLimited("Истекли пять минут ожидания MRKT",time.time())
             self.reconcile(op_id)
             if (self.db.get("operation",op_id) or {}).get("state")!="COMPLETE":
                 raise ManualRequired("MRKT не подтвердил владение купленным NFT; нужна сверка")

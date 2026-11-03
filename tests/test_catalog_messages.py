@@ -156,3 +156,24 @@ def test_message_templates_and_local_url_can_be_saved(db):
         assert client.patch("/api/v1/settings",headers=headers,json=payload).status_code==200
         assert client.patch("/api/v1/settings",headers=headers,json={"catalog_promo_paid_template":"{code.secret}"}).status_code==422
         assert client.patch("/api/v1/settings",headers=headers,json={"catalog_public_url":"javascript:alert(1)"}).status_code==422
+
+
+def test_paid_ad_with_initially_missing_chat_is_repaired_once_when_details_arrive(db,paid):
+    from backend.app.catalog_promo import handle_payment
+    service=Service(db)
+    assert handle_payment(service,{**paid,"chat_id":""})
+    assert db.get("order",paid["id"])["stage"]=="MANUAL" and not db.list("catalog_credit_payment")
+    assert handle_payment(service,paid)
+    assert len(db.list("catalog_credit_payment"))==1
+    assert db.get("order",paid["id"])["stage"]=="AWAITING_SELECTION"
+    assert len(db.list("catalog_message"))==2
+    credit.handle_payment(service,paid)
+    assert len(db.list("catalog_credit_payment"))==1 and len(db.list("catalog_message"))==2
+
+
+def test_code_creation_does_not_wait_for_publication_tariff(db,paid,monkeypatch):
+    service=Service(db);tariff=Mock(side_effect=TimeoutError())
+    monkeypatch.setattr(service,"premium_quote",tariff)
+    assert credit.handle_payment(service,paid)
+    tariff.assert_not_called()
+    assert len(db.list("catalog_credit_payment"))==1 and len(db.list("catalog_message"))==2

@@ -8,7 +8,7 @@ from backend.app.integrations.clients import Playerok, IntegrationError, order_r
 
 def deal(*fields, status="PAID", direction="OUT", id="order"):
     return NS(id=id, direction=direction, status=status, obtaining_fields=list(fields),
-              item=NS(id="lot", name="Gift",slug="gift-listing",price=100), price=100)
+              item=NS(id="lot", name="Gift",slug="gift-listing",price=100), price=100, chat=NS(id="chat"))
 
 
 @pytest.fixture
@@ -138,3 +138,12 @@ def test_only_unstarted_system_classification_can_resume_after_exact_mapping(db,
     with db.sessions() as session:
         tasks=list(session.scalars(select(Task).where(Task.kind=="process_order")))
     assert len(tasks)==(0 if blocked else 1)
+
+
+def test_missing_chat_hydrates_even_when_username_and_price_are_present(playerok):
+    adapter,account=playerok
+    summary=deal(NS(label="username",value="Ramz_02"));summary.chat=None
+    account.get_deals.return_value=NS(deals=[summary])
+    account.get_deal.return_value=deal(NS(label="username",value="Ramz_02"))
+    assert adapter.orders()[0]["chat_id"]=="chat"
+    account.get_deal.assert_called_once_with("order")

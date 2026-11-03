@@ -107,6 +107,19 @@ class Playerok:
         return list(result.values())
 
     def premium(self, item_id, price): return self.client.get_priority_status(item_id, int(price), premium=True)
+    def publication_premium(self, item_id, price):
+        from ..pricing_scope import can_price
+        # Active premium listings expose a cheaper bump tariff. A verified
+        # inactive NFT listing provides the publication tariff for this category.
+        candidates=[lot for lot in self.db.list("lot",100000)
+                    if can_price(lot) and lot.get("status") in {"DRAFT","DISCONTINUED"} and lot.get("slug")]
+        candidates.sort(key=lambda lot:(lot["id"]!=item_id,lot.get("status")!="DRAFT",lot["id"]))
+        for lot in candidates[:5]:
+            fresh=self.item(lot["slug"])
+            if str(fresh.get("id"))!=lot["id"] or fresh.get("status") not in {"DRAFT","DISCONTINUED"}:continue
+            result=self.client.get_priority_status(lot["id"],int(price),premium=True)
+            return {**result,"reference_item_id":lot["id"],"purpose":"publication"}
+        raise IntegrationError("Нет снятого с продажи NFT-лота для проверки тарифа публикации премиума. Тариф поднятия активного лота не используется")
     def promote(self, item_id, status_id):
         gate(self.db, "promotions")
         query = """mutation increaseItemPriorityStatus($input: PublishItemInput!) {
@@ -192,7 +205,7 @@ class Playerok:
                 started=self.db.settings().get("catalog_promo_started_at")
                 buyer_required=bool(bound.get("catalog_credit_id") or (started and (bound.get("pair_id") or (bound.get("delivery_mode")=="catalog" and bound.get("lot_type")=="PROMOTIONAL" and bound.get("catalog_collection"))) and bound.get("delivery_mode")!="manual" and not bound.get("catalog_gift_id") and order_created_at({"id":str(d.id),"created_at":getattr(d,"created_at",None)})>=started))
             if (not deal_id and enum(getattr(d,"status",None)) == "PAID"
-                    and (recipient is None or not getattr(summary_item,"slug",None)
+                    and (recipient is None or not getattr(getattr(d,"chat",None),"id",None) or not getattr(summary_item,"slug",None)
                          or getattr(summary_item,"price",None) is None
                          or buyer_required)):
                 detail = account.get_deal(str(d.id))

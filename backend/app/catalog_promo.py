@@ -15,7 +15,11 @@ def handle_payment(service,order):
     if not (is_nft_lot(lot) or catalog_lot) or lot.get("catalog_gift_id") or lot.get("lot_type")=="TEMPORARY" or lot.get("catalog_credit_id"):return False
     existing=db.get("order",order["id"])
     if db.get("processed",order["id"]):return False
-    if existing and (existing.get("source")=="legacy" or existing.get("stage")!="HISTORICAL" or (existing.get("playerok_status") or existing.get("status")) in credit.PAID):return False
+    repairable=bool(existing and existing.get("source")!="legacy" and existing.get("stage")=="MANUAL"
+                    and existing.get("reason") in {"Не подтверждены покупатель и чат оплаченного рекламного лота","Обычный товар: закупка MRKT и автоматическая выдача не применяются"}
+                    and not existing.get("manual_hold") and not existing.get("cancel_requested")
+                    and not any(op.get("order_id")==order["id"] for op in db.list("operation",100000)))
+    if existing and not repairable and (existing.get("source")=="legacy" or existing.get("stage")!="HISTORICAL" or (existing.get("playerok_status") or existing.get("status")) in credit.PAID):return False
     if not order.get("buyer_id") or not order.get("chat_id"):
         db.put("order",order["id"],{**order,"stage":"MANUAL","reason":"Не подтверждены покупатель и чат оплаченного рекламного лота"});return True
     if D(order["sale_rub"])<=0:return True
@@ -23,8 +27,7 @@ def handle_payment(service,order):
     pair=db.get("pair",lot.get("pair_id")) or {}
     scope={"collection":pair.get("collection") or lot.get("catalog_collection", ""),"model":pair.get("model", "")}
     data={"state":"AWAITING_SELECTION","test":False,"source":"playerok_promotional","root_order_id":order["id"],"paid_rub":order["sale_rub"],"initial_rub":order["sale_rub"],"recipient":order.get("recipient") or "","lot_id":lot["id"],**scope,"buyer_id":order["buyer_id"],"buyer_username":order.get("buyer_username"),"chat_id":order["chat_id"],"created_at":time.time(),"code_encrypted":db.cipher.encrypt(code.encode()).decode(),"payments":[{"amount_rub":order["sale_rub"],"kind":"ORIGINAL","deal_id":order["id"]}]}
-    from .catalog_premium import quote as premium_quote
-    premium=premium_quote(service,lot["id"],order["sale_rub"])
+    premium={"premium_pending":True}  # Code and buyer instructions must not wait for a tariff request.
     receipt={**premium,"credit_id":cid,"amount_rub":order["sale_rub"],"buyer_id":order["buyer_id"],"chat_id":order["chat_id"],"accepted":True,"kind":"ORIGINAL","status":order["status"],"revision":0,"lot_id":lot["id"]}
     root={**order,"stage":"AWAITING_SELECTION","catalog_root_credit_id":cid,"playerok_status":order["status"]}
     with db.engine.connect() as conn:

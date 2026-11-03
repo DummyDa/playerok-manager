@@ -10,17 +10,18 @@ def quote(service, lot_id, amount):
         cost = D(tariff["cost_rub"])
         if not cost.is_finite() or cost < 0:
             raise ValueError("Invalid premium tariff")
-        return {"premium_rub": str(cost), "premium_basis": "playerok_tariff", "premium_pending": False,
+        return {"premium_rub": str(cost), "premium_basis": "publication_tariff_v2", "premium_pending": False,
                 "premium_price_rub": str(amount), "premium_checked_at": time.time()}
     except Exception:
-        return {"premium_pending": True, "premium_retry_at": time.time() + 60}
+        return {"premium_pending": True, "premium_rub": None, "premium_basis": "publication_tariff_v2", "premium_retry_at": time.time() + 60}
 
 
-def refresh(service, limit=1):
+def refresh(service, limit=1, credit_id=None):
     """Also fill historical advertising receipts without replaying any trade."""
     count = 0
     for receipt in service.db.list("catalog_credit_receipt", 100000):
-        if not eligible(service.db, receipt) or receipt.get("premium_rub") is not None:
+        if credit_id and receipt.get("credit_id")!=credit_id:continue
+        if not eligible(service.db, receipt) or (receipt.get("premium_rub") is not None and receipt.get("premium_basis")!="playerok_tariff"):
             continue
         if receipt.get("premium_retry_at", 0) > time.time():
             continue

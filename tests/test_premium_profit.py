@@ -84,7 +84,7 @@ def test_manual_ton_rate_applies_to_purchase_ton_fees_and_paid_profit(db):
 
 def premium_lot(db,monkeypatch):
     prepare(db);db.put("lot","l",{"premium":True,"price":200})
-    client=Mock();client.premium.side_effect=lambda lot,price:{"id":"premium-"+str(price),"price":str(D(price)/10)}
+    client=Mock();client.publication_premium.side_effect=lambda lot,price:{"id":"premium-"+str(price),"price":str(D(price)/10)}
     monkeypatch.setattr("backend.app.service.Playerok",lambda db:client)
     return client
 
@@ -113,10 +113,10 @@ def test_premium_auto_detection_cache_and_exact_tariff_for_both_prices(db,monkey
     assert result["premium_quote_price"]==result["sale_price"]
     assert D(result["current_promotion_rub"])==20
     assert D(result["current_profit_rub"])==30  # 200 - NFT 100 - Stars 50 - premium 20
-    called=client.premium.call_count
+    called=client.publication_premium.call_count
     service.estimate("l",allow_network=False)
-    assert client.premium.call_count==called
-    assert {args[0] for args,_ in client.premium.call_args_list}=={"l"}
+    assert client.publication_premium.call_count==called
+    assert {args[0] for args,_ in client.publication_premium.call_args_list}=={"l"}
 
 def test_multiple_promotions_paid_sale_and_profile_fees_remain_separate(db,monkeypatch):
     premium_lot(db,monkeypatch);db.put("strategy","default",{"premium_purchases_per_sale":2})
@@ -131,7 +131,7 @@ def test_exclude_and_enabled_schedule_and_stale_or_missing_tariff(db,monkeypatch
     client=premium_lot(db,monkeypatch)
     db.put("strategy","default",{"premium_mode":"exclude"})
     assert D(Service(db).estimate("l")["promotion_rub"])==0
-    client.premium.assert_not_called()
+    client.publication_premium.assert_not_called()
     db.put("lot","l",{"premium":False});db.put("strategy","default",{"premium_mode":"auto"})
     db.put("promotion_schedule","l",{"enabled":True})
     with pytest.raises(PremiumQuoteRequired):Service(db).estimate("l",allow_network=False)
@@ -140,7 +140,7 @@ def test_exclude_and_enabled_schedule_and_stale_or_missing_tariff(db,monkeypatch
     for row in prices.values():row["checked_at"]=time.time()-901
     db.put("premium_quotes","l",{"prices":prices})
     with pytest.raises(PremiumQuoteRequired):Service(db).estimate("l",allow_network=False)
-    client.premium.side_effect=RuntimeError("private-provider-token")
+    client.publication_premium.side_effect=RuntimeError("private-provider-token")
     with pytest.raises(PricingError,match="тариф премиума") as e:Service(db).estimate("l")
     assert "private-provider-token" not in str(e.value)
 
@@ -151,7 +151,7 @@ def test_api_queues_premium_tariff_reads_and_never_accesses_playerok_in_request(
         api.headers["X-CSRF-Token"]=login.json()["csrf"]
         result=api.post("/api/v1/pricing/l/preview").json()
         assert result["task_id"]
-        client.premium.assert_not_called()
+        client.publication_premium.assert_not_called()
         from backend.app.worker import Worker
         operation=Worker(db).dispatch("preview_price",{"lot_id":"l"})
         assert operation["expected"]["premium_included"]
@@ -171,14 +171,14 @@ def test_finance_and_overview_deduct_actual_premium_once_not_forecast_reserve(db
 def test_ordinary_products_never_request_premium_for_mrkt_profit(db,monkeypatch):
     client=premium_lot(db,monkeypatch);db.put("lot","l",{"delivery_mode":"manual"})
     with pytest.raises(PricingError,match="выберите коллекцию"):Service(db).estimate("l")
-    client.premium.assert_not_called()
+    client.publication_premium.assert_not_called()
 
 def test_changed_premium_tariff_rejects_execution_before_listing_mutation(db,monkeypatch):
     from backend.app.operations import submit
     client=premium_lot(db,monkeypatch);service=Service(db)
     operation=service.preview_price("l")
     submit(db,operation["id"])
-    client.premium.side_effect=lambda lot,price:{"id":"new-tariff","price":"50"}
+    client.publication_premium.side_effect=lambda lot,price:{"id":"new-tariff","price":"50"}
     service.execute(operation["id"])
     saved=db.get("operation",operation["id"])
     assert saved["state"]=="FAILED" and "Расчёт изменился" in saved["error"]

@@ -30,11 +30,25 @@ function renderListingTimer(){
   $("#listing-timer-progress").style.width=`${Math.min(100,left/900*100)}%`;
 }
 
+function checkoutProgress(step,text){
+  const output=$("#check-result");
+  if(!output)return;
+  const changed=output.dataset.checkoutStep!==step;
+  output.dataset.checkoutStep=step;
+  output.setAttribute("role","status");output.setAttribute("aria-live","polite");output.setAttribute("aria-atomic","true");
+  output.classList.add("checkout-status");output.classList.remove("error");
+  if(output.textContent!==text)output.textContent=text;
+  if(changed){
+    output.classList.remove("checkout-status-changed");void output.offsetWidth;output.classList.add("checkout-status-changed");
+    if(step==="moderating"||step==="ready")announce(text);
+  }
+}
+
 function renderRegularCheckout() {
   renderListingTimer();
   if(!currentGift)return;
   const button=$("#check-gift"),output=$("#check-result");
-  if(regularCheckoutBusy){button.disabled=true;button.textContent="Создаём лот на Playerok…";return;}
+  if(regularCheckoutBusy){button.disabled=true;button.textContent=output.dataset.checkoutStep==="moderating"?"Лот проверяется Playerok…":"Создаём лот на Playerok…";return;}
   if(currentGift.checkout_url){
     const left=Math.max(0,Math.ceil(currentGift.expires_at-Date.now()/1000));
     button.disabled=!left;button.textContent=left?"Открыть лот на Playerok":"Время оплаты истекло";
@@ -42,7 +56,7 @@ function renderRegularCheckout() {
     let link=output.querySelector("a");
     if(!link){link=document.createElement("a");link.target="_blank";link.rel="noopener";output.replaceChildren(link);}
     link.href=currentGift.checkout_url;
-    link.textContent="Оплатить на Playerok ↗";
+    link.textContent="Лот готов — перейти к оплате ↗";
     output.classList.remove("error");return;
   }
   button.disabled=!!currentGift.unavailable;
@@ -366,14 +380,16 @@ async function verifyGift() {
   if (!sourceStatus?.pricing?.ready || !Number.isFinite(shown)) {announce("Цена пока недоступна");return;}
   const button=$("#check-gift"), output=$("#check-result");
   regularCheckoutBusy=true;
-  button.disabled=true;button.textContent="Создаём лот на Playerok…";output.textContent="";output.classList.remove("error");
+  button.disabled=true;button.textContent="Создаём лот на Playerok…";checkoutProgress("creating","Создаём лот на Playerok. Это займёт немного времени.");
   try {
     const request=await api("/api/checkout/"+encodeURIComponent(selectedId),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({price_rub:shown})});
     let result;
-    for(let i=0;i<180;i++) {
+    for(let i=0;i<900;i++) {
       result=await api("/api/checkout/"+encodeURIComponent(request.id));
+      if(currentGift?.id!==selectedId || !$("#gift-dialog").open)return;
       if(["READY","PRICE_CHANGED","FAILED","UNKNOWN","EXPIRED","PAID"].includes(result.state))break;
-      if(result.state==="QUEUED" && result.notice){output.textContent=result.notice;button.textContent="Ожидаем проверку наличия…";}
+      if(result.state==="MODERATING"){checkoutProgress("moderating","Лот создан и проверяется Playerok. После одобрения появится ссылка для оплаты.");button.textContent="Лот проверяется Playerok…";}
+      else if(result.state==="QUEUED" && result.notice){checkoutProgress("creating",result.notice);button.textContent="Ожидаем проверку наличия…";}
       await new Promise(resolve=>setTimeout(resolve,1000));
     }
     if(currentGift?.id!==selectedId)return;
@@ -385,6 +401,7 @@ async function verifyGift() {
       return;
     }
     if(result.state!=="READY")throw new Error(result.error || (result.state==="UNKNOWN"?"Создание требует проверки в основной панели. Повторного создания не будет.":"Лот ещё создаётся или недоступен. Проверьте позже."));
+    checkoutProgress("ready","Playerok одобрил лот. Можно переходить к оплате.");
     const paymentUrl=new URL(result.url);
     if(paymentUrl.protocol!=="https:" || paymentUrl.hostname!=="playerok.com")throw new Error("Не подтверждён адрес лота Playerok");
     const saved={checkout_url:paymentUrl.href,expires_at:result.expires_at};
@@ -393,7 +410,7 @@ async function verifyGift() {
     // Open only the finished listing; keep the card link if popups are blocked.
     try {window.open(paymentUrl.href,"_blank","noopener");} catch {}
   } catch(error) {
-    if(currentGift?.id===selectedId){output.textContent=error.message;output.classList.add("error");button.textContent="Повторить";}
+    if(currentGift?.id===selectedId){checkoutProgress("error",error.message);output.classList.add("error");button.textContent="Повторить";}
   } finally {
     regularCheckoutBusy=false;
     if(currentGift?.id===selectedId){if(currentGift.checkout_url)renderRegularCheckout();else button.disabled=false;}
@@ -650,8 +667,8 @@ function renderPaidDetail() {
     button.disabled=true;button.textContent="Подарок уже получен";
     $("#check-result").textContent=`Передача подарка подтверждена. На балансе заказа осталось ${integer(available)} ₽.`;
   } else if(paidChoice.state==="PREPARING"){
-    button.disabled=true;button.textContent="Создаём лот доплаты…";
-    $("#check-result").textContent="Подарок и сумма зафиксированы. Ссылка на оплату появится здесь.";
+    button.disabled=true;button.textContent=paidChoice.checkout_state==="MODERATING"?"Лот доплаты проверяется Playerok…":"Создаём лот доплаты…";
+    checkoutProgress(paidChoice.checkout_state==="MODERATING"?"moderating":"creating",paidChoice.checkout_state==="MODERATING"?"Лот доплаты создан и проверяется Playerok. После одобрения появится ссылка для оплаты.":"Подарок и сумма зафиксированы. Создаём лот доплаты на Playerok.");
   } else if(paidChoice.state==="EXECUTING"){
     button.disabled=true;
     const stages={AWAITING_MANUAL_DELIVERY:"Подарок готов. Ожидаем выдачи продавцом.",PURCHASING:"Покупаем подарок…",PURCHASED:"Выводим NFT в Telegram…",WITHDRAWN:sourceStatus?.pricing?.manual_delivery?"Готовим подарок к выдаче продавцом…":"Передаём подарок…",TRANSFERRED:"Проверяем передачу…",AWAITING_ENABLE:"Ожидание разрешения выдачи"};
@@ -664,7 +681,7 @@ function renderPaidDetail() {
     const seconds=Math.max(0,Math.ceil(paidChoice.expires_at-Date.now()/1000));
     button.disabled=!selected || !paidChoice.payment_url || !seconds;
     button.textContent=!selected?"Другой подарок уже выбран":seconds?`Доплатить ${integer(paidChoice.topup_rub)} ₽ на Playerok`:"Проверяем статус оплаты…";
-    $("#check-result").textContent=seconds?`Оплатите доплату на Playerok. Осталось ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")}. После подтверждения оплаты начнётся выдача.`:"Не оплачивайте старый лот. Ждём проверки оплаты и снятия предложения.";
+    checkoutProgress("ready",seconds?`Playerok одобрил лот доплаты. Перейдите к оплате. Осталось ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")}.`:"Не оплачивайте старый лот. Ждём проверки оплаты и снятия предложения.");
   } else {button.textContent=due>0?`Доплатить ${integer(due)} ₽`:"Получить подарок";if(paidChoice.notice)$("#check-result").textContent=paidChoice.notice;}
 }
 function renderPaidChoice() {

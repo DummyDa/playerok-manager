@@ -516,7 +516,13 @@ def create_app(db:Database|None=None):
     def sync_orders()->dict:return {"task_id":db.enqueue("orders")}
 
     @app.post("/api/v1/orders/{id}/complete-manually")
-    def complete_manually(id:str)->dict:
+    def complete_manually(id:str,payload:schemas.ManualFulfillment|None=None)->dict:
+        from .manual_fulfillment import prepare
+        oid=prepare(db,id,payload.purchase_rub if payload else None)
+        return {"task_id":db.enqueue("manual_review_complete",{"order_id":oid},key="manual-review:"+oid)}
+
+    @app.post("/api/v1/orders/{id}/complete-silently")
+    def complete_silently(id:str)->dict:
         from .manual_completion import complete
         return complete(db,id)
 

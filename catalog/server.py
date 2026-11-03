@@ -1233,7 +1233,9 @@ def checkout_status(gift_id: str):
                 encoded=json.dumps(gift)
                 conn.execute("UPDATE gifts SET price=?,checked=?,payload=? WHERE id=?",(gift["price_nano"],gift["checked_at"],encoded,gift_id))
                 conn.execute("UPDATE browse_entries SET payload=? WHERE id=?",(encoded,gift_id))
-        return {key:value.get(key) for key in ("state","url","price_rub","expires_at","error","updated_gift","notice","retry_at")}
+        result={key:value.get(key) for key in ("state","url","price_rub","expires_at","error","updated_gift","notice","retry_at")}
+        if value.get("state")!="READY":result["url"]=None
+        return result
     finally:db.engine.dispose()
 
 app.mount("/", StaticFiles(directory=HERE / "web", html=True), name="web")

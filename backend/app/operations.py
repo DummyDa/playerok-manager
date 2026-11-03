@@ -33,6 +33,9 @@ def recover(db):
         if message.get("state")=="SUBMITTED":db.put("grant_message",message["id"],{"state":"UNKNOWN"})
         elif message.get("state")=="QUEUED":db.enqueue("grant_message",{"message_id":message["id"]},key="grant_message:"+message["id"])
     for checkout in db.list("catalog_checkout",100000):
+        if checkout.get("state")=="MODERATING":
+            from .catalog_checkout import schedule_moderation
+            schedule_moderation(db,checkout)
         if checkout.get("state") in {"CREATING","EXPIRING"}:
             db.put("catalog_checkout",checkout["id"],{"state":"UNKNOWN","error":"Запрос прерван перезапуском; требуется сверка Playerok, автоматического повтора нет"})
     from sqlalchemy import select

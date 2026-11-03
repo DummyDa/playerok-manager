@@ -72,3 +72,12 @@ def test_each_new_advertising_sale_has_its_own_tariff(db):
     db.put("order", "second-delivery", {"catalog_credit_id": "wallet", "created_at": 40, "stage": "COMPLETE"})
     assert premium.order_cost(db, "delivery") == 35
     assert premium.order_cost(db, "second-delivery") == 45
+
+
+def test_old_active_bump_tariff_is_replaced_by_publication_tariff(db):
+    setup_sale(db,"13")
+    db.put("catalog_credit_receipt","paid",{"premium_basis":"playerok_tariff"})
+    service=Mock(db=db);service.premium_quote.return_value={"cost_rub":"25"}
+    premium.refresh(service)
+    assert premium.order_cost(db,"delivery")==25
+    assert db.get("catalog_credit_receipt","paid")["premium_basis"]=="publication_tariff_v2"

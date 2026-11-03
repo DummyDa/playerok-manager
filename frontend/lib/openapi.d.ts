@@ -1271,6 +1271,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/orders/{id}/complete-silently": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Complete Silently */
+        post: operations["complete_silently_api_v1_orders__id__complete_silently_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/orders/{id}/manual-delivered": {
         parameters: {
             query?: never;
@@ -1672,6 +1689,11 @@ export interface components {
             description?: string | null;
             /** Price */
             price?: number | null;
+        };
+        /** ManualFulfillment */
+        ManualFulfillment: {
+            /** Purchase Rub */
+            purchase_rub?: number | string | null;
         };
         /** ModelsInput */
         ModelsInput: {
@@ -4451,6 +4473,43 @@ export interface operations {
         };
     };
     complete_manually_api_v1_orders__id__complete_manually_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ManualFulfillment"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    complete_silently_api_v1_orders__id__complete_silently_post: {
         parameters: {
             query?: never;
             header?: never;
