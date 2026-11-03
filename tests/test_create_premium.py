@@ -86,3 +86,18 @@ def test_create_premium_budget_and_ledger(db,monkeypatch,limit,success):
     else:
         assert db.get("operation",op["id"])["state"]=="UNKNOWN"
         assert svc.daily_spent("promotion")==50
+
+
+def test_create_collection_only_preserves_promotional_scope(db,monkeypatch):
+    from backend.app.safety import is_nft_lot
+    db.secret("playerok_cookies","test-cookie")
+    fields={"title":"Gift","collection":"Liberty Figure","pair_id":"","price":500,"premium":False}
+    op=new_operation(db,"create",{"fields":fields,"image":"cG5n"})
+    db.put("operation",op["id"],{"state":"QUEUED"})
+    monkeypatch.setattr(Playerok,"create",lambda *args,**kwargs:{"item_id":"collection-ad","slug":"gift"})
+    Service(db).execute(op["id"])
+    assert db.get("operation",op["id"])["state"]=="COMPLETE"
+    lot=db.get("lot","collection-ad")
+    assert lot["lot_type"]=="PROMOTIONAL" and lot["catalog_collection"]=="Liberty Figure"
+    assert lot["pair_id"] is None and lot["delivery_mode"]=="catalog"
+    assert not is_nft_lot(lot)

@@ -25,14 +25,14 @@ def test_review_shows_actual_topup_rejection_without_mutating_balance(db):
 def test_payments_and_multiple_deliveries_are_grouped_without_double_counting(db):
     db.put("catalog_credit_payment","wallet",{"state":"AWAITING_SELECTION","source":"playerok_promotional","root_order_id":"root","paid_rub":"1200","initial_rub":"1000","recipient":"buyer","purchases":[{"price_rub":"700"},{"price_rub":"400"}],"created_at":1})
     for id,kind,amount in [("root","ORIGINAL","1000"),("topup","TOPUP","200")]:
-        db.put("catalog_credit_receipt",id,{"credit_id":"wallet","kind":kind,"accepted":True,"status":"SENT","amount_rub":amount})
+        db.put("catalog_credit_receipt",id,{"credit_id":"wallet","kind":kind,"accepted":True,"status":"SENT","amount_rub":amount,**({"premium_rub":"50"} if kind=="ORIGINAL" else {})})
     rows=[{"id":"root","catalog_root_credit_id":"wallet","stage":"AWAITING_SELECTION"},{"id":"topup","catalog_topup_credit_id":"wallet"},{"id":"a","catalog_credit_id":"wallet","stage":"COMPLETE"},{"id":"b","catalog_credit_id":"wallet","stage":"COMPLETE"},{"id":"ordinary"}]
     ledger=[{"order_id":"a","type":"revenue","amount_rub":"700"},{"order_id":"a","type":"purchase","amount_rub":"500"},{"order_id":"b","type":"revenue","amount_rub":"400"},{"order_id":"b","type":"purchase","amount_rub":"300"}]
     result=grouped_orders(db,rows,ledger)
     assert len(result)==2
     group=next(r for r in result if r.get("catalog_group"))
     assert group["balance_rub"]=="100" and group["sale_rub"]=="1200"
-    assert group["totals"]["revenue"]=="1100" and group["profit_rub"]=="300"
+    assert group["totals"]["revenue"]=="1100" and group["profit_rub"]=="250"
     assert len(group["deliveries"])==2 and group["delivery_count"]==2
     assert group["stage"]=="AWAITING_SELECTION"
 

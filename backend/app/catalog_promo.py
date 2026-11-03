@@ -11,7 +11,8 @@ def handle_payment(service,order):
     db=service.db;settings=db.settings();started=settings.get("catalog_promo_started_at")
     if not started or not settings.get("orders_baselined") or order["status"]!="PAID" or (order.get("created_at") or 0)<started:return False
     lot=db.get("lot",order.get("lot_id")) or {}
-    if not is_nft_lot(lot) or lot.get("catalog_gift_id") or lot.get("lot_type")=="TEMPORARY" or lot.get("catalog_credit_id"):return False
+    catalog_lot=lot.get("delivery_mode")=="catalog" and lot.get("lot_type")=="PROMOTIONAL" and bool(lot.get("catalog_collection"))
+    if not (is_nft_lot(lot) or catalog_lot) or lot.get("catalog_gift_id") or lot.get("lot_type")=="TEMPORARY" or lot.get("catalog_credit_id"):return False
     existing=db.get("order",order["id"])
     if db.get("processed",order["id"]):return False
     if existing and (existing.get("source")=="legacy" or existing.get("stage")!="HISTORICAL" or (existing.get("playerok_status") or existing.get("status")) in credit.PAID):return False
@@ -19,9 +20,12 @@ def handle_payment(service,order):
         db.put("order",order["id"],{**order,"stage":"MANUAL","reason":"Не подтверждены покупатель и чат оплаченного рекламного лота"});return True
     if D(order["sale_rub"])<=0:return True
     code=credit.new_code(db);cid="promo:"+order["id"]
-    pair=db.get("pair",lot["pair_id"]) or {}
-    data={"state":"AWAITING_SELECTION","test":False,"source":"playerok_promotional","root_order_id":order["id"],"paid_rub":order["sale_rub"],"initial_rub":order["sale_rub"],"recipient":order.get("recipient") or "","lot_id":lot["id"],"collection":pair.get("collection",""),"buyer_id":order["buyer_id"],"buyer_username":order.get("buyer_username"),"chat_id":order["chat_id"],"created_at":time.time(),"code_encrypted":db.cipher.encrypt(code.encode()).decode(),"payments":[{"amount_rub":order["sale_rub"],"kind":"ORIGINAL","deal_id":order["id"]}]}
-    receipt={"credit_id":cid,"amount_rub":order["sale_rub"],"buyer_id":order["buyer_id"],"chat_id":order["chat_id"],"accepted":True,"kind":"ORIGINAL","status":order["status"],"revision":0,"lot_id":lot["id"]}
+    pair=db.get("pair",lot.get("pair_id")) or {}
+    scope={"collection":pair.get("collection") or lot.get("catalog_collection", ""),"model":pair.get("model", "")}
+    data={"state":"AWAITING_SELECTION","test":False,"source":"playerok_promotional","root_order_id":order["id"],"paid_rub":order["sale_rub"],"initial_rub":order["sale_rub"],"recipient":order.get("recipient") or "","lot_id":lot["id"],**scope,"buyer_id":order["buyer_id"],"buyer_username":order.get("buyer_username"),"chat_id":order["chat_id"],"created_at":time.time(),"code_encrypted":db.cipher.encrypt(code.encode()).decode(),"payments":[{"amount_rub":order["sale_rub"],"kind":"ORIGINAL","deal_id":order["id"]}]}
+    from .catalog_premium import quote as premium_quote
+    premium=premium_quote(service,lot["id"],order["sale_rub"])
+    receipt={**premium,"credit_id":cid,"amount_rub":order["sale_rub"],"buyer_id":order["buyer_id"],"chat_id":order["chat_id"],"accepted":True,"kind":"ORIGINAL","status":order["status"],"revision":0,"lot_id":lot["id"]}
     root={**order,"stage":"AWAITING_SELECTION","catalog_root_credit_id":cid,"playerok_status":order["status"]}
     with db.engine.connect() as conn:
         conn.exec_driver_sql("BEGIN IMMEDIATE");table=Entity.__table__
@@ -41,7 +45,7 @@ def handle_payment(service,order):
                 if isinstance(exc,InvalidToken):continue
                 raise
             cid=row.id;reused=True
-            data={**old,"collection":pair.get("collection",old.get("collection","")),"paid_rub":str(D(old["paid_rub"])+D(order["sale_rub"])),"buyer_username":order.get("buyer_username") or old.get("buyer_username"),"chat_id":order["chat_id"],"state":"AWAITING_SELECTION","notice":None,"payments":[*old.get("payments",[]),{"amount_rub":order["sale_rub"],"kind":"ORIGINAL","deal_id":order["id"]}]}
+            data={**old,**scope,"paid_rub":str(D(old["paid_rub"])+D(order["sale_rub"])),"buyer_username":order.get("buyer_username") or old.get("buyer_username"),"chat_id":order["chat_id"],"state":"AWAITING_SELECTION","notice":None,"payments":[*old.get("payments",[]),{"amount_rub":order["sale_rub"],"kind":"ORIGINAL","deal_id":order["id"]}]}
             receipt["credit_id"]=cid;root["catalog_root_credit_id"]=cid
             conn.execute(table.update().where(table.c.kind=="catalog_credit_payment",table.c.id==cid).values(data=data,updated=time.time()))
             break

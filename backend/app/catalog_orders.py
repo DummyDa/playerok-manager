@@ -23,6 +23,9 @@ def review_reason(db,wallet):
 
 
 def grouped_orders(db,orders,ledger):
+    from .catalog_premium import projected_ledger, allocations
+    ledger=projected_ledger(db,ledger,orders)
+    pending_credits={e["order_id"] for e in allocations(db,orders) if e["pending"]}
     groups=[];hidden=set()
     receipts=db.list("catalog_credit_receipt",100000)
     wallets=db.list("catalog_credit_payment",100000)
@@ -35,6 +38,7 @@ def grouped_orders(db,orders,ledger):
         deliveries=[o for o in linked if o.get("catalog_credit_id")==cid]
         delivery_ids={o["id"] for o in deliveries}
         entries=[e for e in ledger if e.get("order_id") in delivery_ids]
+        premium_pending=bool(delivery_ids & pending_credits)
         settled={e.get("order_id") for e in entries if e.get("type")=="revenue"}
         profit=sum((D(e["amount_rub"]) if e.get("type")=="revenue" else -D(e["amount_rub"]) for e in entries if e.get("order_id") in settled),D(0))
         totals={k:str(sum((D(e["amount_rub"]) for e in entries if e.get("type")==k),D(0))) for k in ("revenue","purchase","transfer","fees","promotion")}
@@ -51,6 +55,6 @@ def grouped_orders(db,orders,ledger):
         if wallet.get("closed_manually"):stage="COMPLETE"
         if wallet.get("closed_after_delivery"):stage=active.get("stage","COMPLETE") if active else "COMPLETE"
         oid=wallet.get("root_order_id") or "catalog-group:"+cid
-        group={"id":oid,"catalog_group":True,"catalog_credit_id":cid,"title":"Заказ каталога · "+(wallet.get("collection") or "Все коллекции"),"stage":stage,"credit_state":state,"source":"catalog_credit","recipient":wallet.get("recipient"),"created_at":wallet.get("created_at",0),"updated_at":max([wallet.get("updated_at",0)]+[o.get("updated_at",0) for o in linked]),"sale_rub":str(paid+manual),"paid_rub":str(paid),"manual_credit_rub":str(manual),"adjustment_rub":wallet.get("adjustment_rub","0"),"refunded_rub":str(refunded),"balance_rub":str(balance(wallet)),"reserved_rub":str(D(wallet.get("reservation_rub",0))),"selected":wallet.get("selected"),"selected_price":wallet.get("selected_price"),"payments":[{k:p.get(k) for k in ("id","kind","amount_rub","status","accepted","revision","created_at")} for p in payments],"deliveries":deliveries,"totals":totals,"profit_rub":str(profit) if settled else None,"profit_actual":bool(settled),"reason":review_reason(db,wallet),"retry_allowed":False,"retry_reason":"Действия доступны у конкретной выдачи","delivery_count":len(wallet.get("purchases",[]))}
+        group={"id":oid,"catalog_group":True,"catalog_credit_id":cid,"title":"Заказ каталога · "+(wallet.get("collection") or "Все коллекции"),"stage":stage,"credit_state":state,"source":"catalog_credit","recipient":wallet.get("recipient"),"created_at":wallet.get("created_at",0),"updated_at":max([wallet.get("updated_at",0)]+[o.get("updated_at",0) for o in linked]),"sale_rub":str(paid+manual),"paid_rub":str(paid),"manual_credit_rub":str(manual),"adjustment_rub":wallet.get("adjustment_rub","0"),"refunded_rub":str(refunded),"balance_rub":str(balance(wallet)),"reserved_rub":str(D(wallet.get("reservation_rub",0))),"selected":wallet.get("selected"),"selected_price":wallet.get("selected_price"),"payments":[{k:p.get(k) for k in ("id","kind","amount_rub","status","accepted","revision","created_at")} for p in payments],"deliveries":deliveries,"totals":totals,"premium_pending":premium_pending,"profit_rub":str(profit) if settled and not premium_pending else None,"profit_actual":bool(settled) and not premium_pending,"reason":review_reason(db,wallet),"retry_allowed":False,"retry_reason":"Действия доступны у конкретной выдачи","delivery_count":len(wallet.get("purchases",[]))}
         groups.append(group);hidden.update(o["id"] for o in linked)
     return [o for o in orders if o["id"] not in hidden]+groups

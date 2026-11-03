@@ -325,11 +325,14 @@ def test_finance_separates_real_from_estimated(db,client):
     assert result["profit_rub"]=="0"
     assert len(result["estimates"])==1
 
-def test_creating_listing_requires_exact_pair(db,client):
+def test_creating_listing_accepts_collection_or_exact_pair(db,client):
     headers=authenticate(client)
     png=b"\x89PNG\r\n\x1a\nimage"
     fields={"title":"Gift","collection":"Liberty Figure","price":"100"}
-    assert client.post("/api/v1/lots/create-preview",headers=headers,data=fields,files={"image":("gift.png",png,"image/png")}).status_code==422
+    collection_only=client.post("/api/v1/lots/create-preview",headers=headers,data=fields,files={"image":("gift.png",png,"image/png")})
+    assert collection_only.status_code==200
+    assert collection_only.json()["payload"]["fields"]["pair_id"]==""
+    assert client.post("/api/v1/lots/create-preview",headers=headers,data={**fields,"pair_id":"missing"},files={"image":("gift.png",png,"image/png")}).status_code==400
     db.put("pair","p",{"collection":"Liberty Figure","model":"Obsidian"})
     r=client.post("/api/v1/lots/create-preview",headers=headers,data={**fields,"pair_id":"p"},files={"image":("gift.png",png,"image/png")})
     assert r.status_code==200
@@ -379,3 +382,17 @@ def test_silent_completion_rejects_active_external_request(db,client):
     db.put("operation","send",{"state":"SUBMITTED","order_id":"busy"})
     assert client.post("/api/v1/orders/busy/complete-manually",headers=headers).status_code==400
     assert db.get("order","busy")["stage"]=="MANUAL"
+
+
+def test_catalog_collection_binding_does_not_enable_direct_purchase(db,client):
+    from backend.app.safety import is_nft_lot
+    headers=authenticate(client)
+    db.put("lot","ad",{"pair_id":"old","delivery_mode":"telegram_nft"})
+    response=client.patch("/api/v1/lots/ad/binding",headers=headers,json={"delivery_mode":"catalog","catalog_collection":" Liberty Figure "})
+    assert response.status_code==200
+    lot=db.get("lot","ad")
+    assert lot["pair_id"] is None and lot["catalog_collection"]=="Liberty Figure"
+    assert lot["lot_type"]=="PROMOTIONAL" and not is_nft_lot(lot)
+    listed=next(row for row in client.get("/api/v1/lots").json()["items"] if row["id"]=="ad")
+    assert listed["delivery_mode"]=="catalog" and listed["pair"] is None
+    assert client.patch("/api/v1/lots/ad/binding",headers=headers,json={"delivery_mode":"catalog","catalog_collection":" "}).status_code==400

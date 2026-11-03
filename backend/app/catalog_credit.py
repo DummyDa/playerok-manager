@@ -59,7 +59,9 @@ def digest(db, code):
 
 
 def catalog_link(payment,code,base="http://127.0.0.1:3180"):
-    query="?"+urlencode({"collection":payment["collection"]}) if payment.get("collection") else ""
+    params={"collection":payment["collection"]} if payment.get("collection") else {}
+    if params and payment.get("model"):params["model"]=payment["model"]
+    query="?"+urlencode(params) if params else ""
     return base.rstrip("/")+"/"+query+"#code="+code
 
 
@@ -267,8 +269,10 @@ def adjust_snapshot(db,cid,snapshot,profile):
     fees=profile.get("fees",[]);rate=D(snapshot["ton_rub"])
     a,b=net_coefficients([f for f in fees if f.get("type")!="ton"],D(snapshot["purchase_rub"]),rate)
     net=sum((a*part+b for part in pieces if part>0),D(0))-sum((D(f["value"])*rate for f in fees if f.get("enabled",True) and f.get("type")=="ton"),D(0))
-    profit=net-D(snapshot["purchase_rub"])-D(snapshot["transfer_rub"])
-    return {**snapshot,"actual_net_rub":str(net),"actual_profit_rub":str(profit),"paid_sale_rub":str(credit["selected_price"]),"paid_promotion_rub":"0","profitable":profit>=0}
+    from .catalog_premium import order_cost
+    premium=order_cost(db,credit.get("fulfillment_order_id"))
+    profit=net-D(snapshot["purchase_rub"])-D(snapshot["transfer_rub"])-premium
+    return {**snapshot,"actual_net_rub":str(net),"actual_profit_rub":str(profit),"paid_sale_rub":str(credit["selected_price"]),"paid_promotion_rub":str(premium),"profitable":profit>=0}
 
 
 def fulfill(service,cid):
@@ -332,6 +336,8 @@ def finalize(service,order):
 
 
 def tick(service):
+    from .catalog_premium import refresh as refresh_premium
+    refresh_premium(service)
     db=service.db
     from .catalog_messages import tick as message_tick
     message_tick(db)

@@ -69,7 +69,7 @@ def test_promotional_payment_creates_one_code_and_instructions_without_issuing_g
     link=next(m for m in db.list("catalog_message") if m.get("after_message_id"))
     assert body(db,link).startswith("http://127.0.0.1:3180/") and "\n" not in body(db,link)
     assert body(db,queue[0]).endswith("Выберите подарок в каталоге:")
-    assert "800 ₽" in body(db,queue[0]) and "collection=Liberty+Figure#code=" in body(db,link)
+    assert "800 ₽" in body(db,queue[0]) and "collection=Liberty+Figure&model=Obsidian#code=" in body(db,link)
     assert "encrypted_text" in queue[0] and "text" not in queue[0]
     assert "Никаких оплат на сайте нет" in body(db,queue[0])
     assert "!продавец" in body(db,queue[0])

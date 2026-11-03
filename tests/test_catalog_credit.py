@@ -24,7 +24,7 @@ def real(db,monkeypatch):
     mrkt.buy.return_value={"id":"owned-gift"}
     mrkt.saved.return_value={"msg_id":1234,"can_transfer_at":0,"transfer_stars":25}
     mrkt.owner.return_value=123;mrkt.transfer.return_value=123
-    client=Mock();client.create.return_value={"item_id":"topup-lot","slug":"pay-extra","status":"APPROVED"}
+    client=Mock();client.premium.return_value={"id":"premium","price":10};client.create.return_value={"item_id":"topup-lot","slug":"pay-extra","status":"APPROVED"}
     monkeypatch.setattr("backend.app.service.Playerok",lambda _:client)
     monkeypatch.setattr("backend.app.integrations.clients.Playerok",lambda _:client)
     monkeypatch.setattr(catalog_checkout,"Playerok",lambda _:client)
@@ -581,3 +581,30 @@ def test_process_order_rate_limit_stops_after_five_retries(db,real,monkeypatch):
     wallet=db.get("catalog_credit_payment",account["id"])
     assert wallet["state"]=="REVIEW" and credit.D(wallet["reservation_rub"])>0
     assert "5 повторов" in wallet["notice"]
+
+
+@pytest.mark.parametrize("model", ["", "Ghost Light"])
+def test_promotional_scope_in_link_and_reused_code(db,real,model):
+    from urllib.parse import parse_qs,urlsplit
+    from backend.app.safety import is_nft_lot
+    service,gift,raw,client=real
+    db.configure(catalog_promo_started_at=time.time()-5,orders_baselined=True,catalog_public_url="https://nftgift.shop")
+    db.put("pair","scope-pair",{"collection":"Chill Flame","model":model})
+    db.put("lot","scope-ad",{"pair_id":"scope-pair" if model else None,"catalog_collection":"Chill Flame","delivery_mode":"telegram_nft" if model else "catalog","lot_type":"PROMOTIONAL"})
+    order={"id":"scope-one","status":"PAID","sale_rub":"500","buyer_id":"scope-buyer","chat_id":"scope-chat","created_at":time.time(),"lot_id":"scope-ad"}
+    assert credit.handle_payment(service,order)
+    wallet=db.list("catalog_credit_payment")[0]
+    assert wallet["collection"]=="Chill Flame" and wallet["model"]==model
+    url=credit.catalog_link(wallet,"ABCD-EFGH","https://nftgift.shop")
+    expected={"collection":["Chill Flame"]}
+    if model:expected["model"]=[model]
+    assert parse_qs(urlsplit(url).query)==expected
+    assert urlsplit(url).fragment=="code=ABCD-EFGH"
+    if not model:assert not is_nft_lot(db.get("lot","scope-ad"))
+    service.mrkt.buy.assert_not_called()
+    # A new collection-only payment clears the previous model on a reused wallet.
+    db.put("lot","scope-ad",{"pair_id":None,"catalog_collection":"Liberty Figure","delivery_mode":"catalog"})
+    assert credit.handle_payment(service,{**order,"id":"scope-two"})
+    current=db.get("catalog_credit_payment",wallet["id"])
+    assert current["collection"]=="Liberty Figure" and current["model"]==""
+    assert len(db.list("catalog_credit_payment"))==1

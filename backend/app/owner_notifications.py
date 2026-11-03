@@ -25,7 +25,10 @@ def render(db, order, event, test=False):
     match=re.fullmatch(r"([A-Za-z0-9]+)-(\d+)",slug)
     name=(pair.get("collection") or (match.group(1) if match else "NFT"))+(" #"+match.group(2) if match else "")
     if pair.get("model"):name+=" · "+pair["model"]
-    ledger=[e for e in db.list("ledger",100000) if e.get("order_id")==order["id"]]
+    from .catalog_premium import projected_ledger,allocations
+    pending_premium_orders={e["order_id"] for e in allocations(db) if e["pending"]}
+    all_entries=projected_ledger(db,db.list("ledger",100000))
+    ledger=[e for e in all_entries if e.get("order_id")==order["id"]]
     sums={kind:sum((D(e["amount_rub"]) for e in ledger if e.get("type")==kind),D(0)) for kind in ("revenue","purchase","transfer","fees","promotion")}
     rate=D(snapshot.get("ton_rub") or 0)
     def rub(value, signed=False):
@@ -44,11 +47,11 @@ def render(db, order, event, test=False):
         percent=" · "+amount(profit/revenue*100)+"%" if revenue>0 else ""
         lines.append("<blockquote>💰 Выручка: <b>"+rub(revenue)+equivalent(revenue)+"</b>\n"
                      "📦 Все расходы: <b>"+rub(costs)+equivalent(costs)+"</b>\n"
-                     "📈 Чистая прибыль: <b>"+rub(profit,True)+equivalent(profit)+percent+"</b></blockquote>")
+                     "📈 Чистая прибыль: <b>"+("уточняется тариф премиума" if order["id"] in pending_premium_orders else rub(profit,True)+equivalent(profit)+percent)+"</b></blockquote>")
         start=datetime.now(timezone(timedelta(hours=3))).replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
         completed={o["id"] for o in db.list("order",100000) if o.get("stage")=="COMPLETE" and o.get("completed_at",0)>=start}
-        daily=sum((D(e["amount_rub"]) if e.get("type")=="revenue" else -D(e["amount_rub"]) for e in db.list("ledger",100000) if e.get("order_id") in completed),D(0))
-        lines.extend(["",f"📊 За сутки: {len(completed)} выдано · прибыль <b>{rub(daily,True)}</b>","<i>По учтённым расходам</i>"])
+        daily=sum((D(e["amount_rub"]) if e.get("type")=="revenue" else -D(e["amount_rub"]) for e in all_entries if e.get("order_id") in completed),D(0))
+        lines.extend(["",f"📊 За сутки: {len(completed)} выдано · прибыль <b>{'уточняется' if completed & pending_premium_orders else rub(daily,True)}</b>","<i>По учтённым расходам</i>"])
     else:
         purchase=sums["purchase"]
         ton=snapshot.get("quote_ton")

@@ -160,6 +160,8 @@ def create_app(db:Database|None=None):
         db.log("admin_password","Пароль администратора изменён")
         return {"changed":True}
 
+
+
     @app.get("/api/v1/settings")
     def settings()->dict:
         result=db.settings();result.pop("bot_offset",None)
@@ -236,7 +238,7 @@ def create_app(db:Database|None=None):
     def lots()->dict:
         # Local edits update timestamps, but must never move items in the seller's list.
         records=sorted(db.list("lot"),key=lambda l:(bool(l.get("missing")),l.get("source_order",float("inf")),l["id"]))
-        return {"items":[{**l,"delivery_mode":"telegram_nft" if is_nft_lot(l) else "manual","estimate":db.get("estimate",l["id"]) if is_nft_lot(l) else None,"pair":db.get("pair",l.get("pair_id",""))} for l in records]}
+        return {"items":[{**l,"delivery_mode":"telegram_nft" if is_nft_lot(l) else "catalog" if l.get("delivery_mode")=="catalog" else "manual","estimate":db.get("estimate",l["id"]) if is_nft_lot(l) else None,"pair":db.get("pair",l.get("pair_id",""))} for l in records]}
 
     @app.post("/api/v1/lots/sync")
     def sync_lots()->dict:return {"task_id":db.enqueue("sync_lots")}
@@ -274,7 +276,13 @@ def create_app(db:Database|None=None):
     def bind(id:str,payload:schemas.Binding)->dict:
         if not db.get("lot",id):raise HTTPException(404,"Лот не найден")
         if payload.delivery_mode=="manual":
-            return db.put("lot",id,{"delivery_mode":"manual","pair_id":None})
+            return db.put("lot",id,{"delivery_mode":"manual","pair_id":None,"catalog_collection":""})
+        if payload.delivery_mode=="catalog":
+            lot=db.get("lot",id)
+            if lot.get("lot_type")=="TEMPORARY" or any(lot.get(key) for key in ("catalog_checkout_id","catalog_gift_id","catalog_credit_id","funding_purpose")):raise ValueError("Лот оплаты конкретного подарка нельзя сделать рекламным")
+            collection=payload.catalog_collection.strip()
+            if not collection:raise ValueError("Выберите коллекцию")
+            return db.put("lot",id,{"delivery_mode":"catalog","pair_id":None,"catalog_collection":collection,"lot_type":"PROMOTIONAL"})
         if not db.get("pair",payload.pair_id) or not db.get("fees",payload.fee_profile_id):raise ValueError("Не найдена пара или профиль комиссий")
         data=payload.model_dump(mode="json",exclude_none=True)
         result=db.put("lot",id,data);db.enqueue("quote",{"pair_id":payload.pair_id},key="quote:"+payload.pair_id)
@@ -293,9 +301,11 @@ def create_app(db:Database|None=None):
         return {"items":[edit_preview(id,payload.changes) for id in dict.fromkeys(payload.item_ids)]}
 
     @app.post("/api/v1/lots/create-preview")
-    async def create_preview(title:str=Form(...),collection:str=Form(...),pair_id:str=Form(...),price:int=Form(...),description:str=Form(""),fee_profile_id:str=Form("default"),keep_in_sale:bool=Form(False),premium:bool=Form(False),premium_max_rub:int=Form(0),image:UploadFile=File(...))->dict:
+    async def create_preview(title:str=Form(...),collection:str=Form(...),price:int=Form(...),pair_id:str=Form(""),description:str=Form(""),fee_profile_id:str=Form("default"),keep_in_sale:bool=Form(False),premium:bool=Form(False),premium_max_rub:int=Form(0),image:UploadFile=File(...))->dict:
         pair=db.get("pair",pair_id)
-        if not pair or pair["collection"]!=collection:raise ValueError("Выберите точную коллекцию и модель")
+        collection=collection.strip()
+        if not collection or len(collection)>120:raise ValueError("Выберите коллекцию")
+        if pair_id and (not pair or pair["collection"]!=collection):raise ValueError("Выберите точную коллекцию и модель")
         if not db.get("fees",fee_profile_id):raise ValueError("Профиль комиссий не найден")
         if price<1 or price>10000000:raise ValueError("Некорректная цена")
         if premium and not 1<=premium_max_rub<=10000000:raise ValueError("Укажите максимальную стоимость премиума")
@@ -474,7 +484,9 @@ def create_app(db:Database|None=None):
         operations=[o for o in db.list("operation",100000) if o.get("order_id")]
         by_order={}
         for operation in operations:by_order.setdefault(operation["order_id"],[]).append(operation)
-        ledger=db.list("ledger",100000)
+        from .catalog_premium import projected_ledger,allocations
+        pending_premium_orders={e["order_id"] for e in allocations(db) if e["pending"]}
+        ledger=projected_ledger(db,db.list("ledger",100000))
         spent={e.get("order_id") for e in ledger}
         actual_profits={}
         revenue_orders={e.get("order_id") for e in ledger if e.get("type")=="revenue"}
@@ -489,6 +501,7 @@ def create_app(db:Database|None=None):
             if order.get("catalog_root_credit_id") or order.get("catalog_topup_credit_id"):reason="Оплата зачислена в код каталога. Подарок выбирается в каталоге"
             if not is_nft_lot(db.get("lot",order.get("lot_id"))):reason="Автовыдача доступна только для привязанного Telegram NFT"
             profit=actual_profits.get(order["id"]) if order["id"] in revenue_orders else (order.get("snapshot") or {}).get("actual_profit_rub")
+            if order["id"] in pending_premium_orders:profit=None
             from .manual_delivery import allowed as manual_allowed
             items.append({**order,"manual_delivery_allowed":manual_allowed(db,order),"retry_allowed":reason is None,"retry_reason":reason,"profit_rub":str(profit) if profit is not None else None,"profit_actual":order["id"] in revenue_orders})
         from .catalog_orders import grouped_orders

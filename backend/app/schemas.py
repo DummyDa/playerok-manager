@@ -124,7 +124,8 @@ class Pair(Strict):
 class Binding(Strict):
     premium_planned:bool|None=None
     pair_id:str|None=None
-    delivery_mode:Literal["manual","telegram_nft"]="telegram_nft"
+    delivery_mode:Literal["manual","telegram_nft","catalog"]="telegram_nft"
+    catalog_collection:str=Field(default="",max_length=120)
     fee_profile_id:str="default"
     strategy:Strategy|None=None
 

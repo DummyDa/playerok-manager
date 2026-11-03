@@ -110,7 +110,7 @@ class Playerok:
     def promote(self, item_id, status_id):
         gate(self.db, "promotions")
         query = """mutation increaseItemPriorityStatus($input: PublishItemInput!) {
-          increaseItemPriorityStatus(input: $input) { id slug name price rawPrice status priority priorityPrice }
+          increaseItemPriorityStatus(input: $input) { id slug name price rawPrice status priority }
         }"""
         payload = {"operationName": "increaseItemPriorityStatus", "variables": {"input": {
             "itemId": item_id, "priorityStatuses": [status_id], "transactionProviderId": "LOCAL",
@@ -190,7 +190,7 @@ class Playerok:
             if not deal_id and enum(getattr(d,"status",None))=="PAID" and not (getattr(getattr(summary_item,"buyer",None),"id",None) or getattr(getattr(d,"user",None),"id",None)):
                 bound=self.db.get("lot",order_lot_id(self.db,summary_item)) or {}
                 started=self.db.settings().get("catalog_promo_started_at")
-                buyer_required=bool(bound.get("catalog_credit_id") or (started and bound.get("pair_id") and bound.get("delivery_mode")!="manual" and not bound.get("catalog_gift_id") and order_created_at({"id":str(d.id),"created_at":getattr(d,"created_at",None)})>=started))
+                buyer_required=bool(bound.get("catalog_credit_id") or (started and (bound.get("pair_id") or (bound.get("delivery_mode")=="catalog" and bound.get("lot_type")=="PROMOTIONAL" and bound.get("catalog_collection"))) and bound.get("delivery_mode")!="manual" and not bound.get("catalog_gift_id") and order_created_at({"id":str(d.id),"created_at":getattr(d,"created_at",None)})>=started))
             if (not deal_id and enum(getattr(d,"status",None)) == "PAID"
                     and (recipient is None or not getattr(summary_item,"slug",None)
                          or getattr(summary_item,"price",None) is None

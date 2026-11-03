@@ -439,7 +439,7 @@ class Service:
                 else:result=client.create(fields,base64.b64decode(payload["image"]))
                 self.db.put("lot",result["item_id"],{"title":result.get("name") or fields["title"],"slug":result["slug"],
                     "price":result.get("price") or fields["price"],"description":fields.get("description",""),"status":result.get("status") or "PENDING_APPROVAL",
-                    "premium":bool(result.get("premium")),"premium_price":result.get("premium_price"),"lot_type":"PROMOTIONAL","keep_in_sale":fields.get("keep_in_sale",False),"pair_id":fields["pair_id"],"delivery_mode":"telegram_nft","fee_profile_id":fields.get("fee_profile_id","default"),"synced_at":time.time(),"url":"https://playerok.com/products/"+result["slug"]})
+                    "premium":bool(result.get("premium")),"premium_price":result.get("premium_price"),"lot_type":"PROMOTIONAL","keep_in_sale":fields.get("keep_in_sale",False),"pair_id":fields.get("pair_id") or None,"catalog_collection":fields.get("collection") or (self.db.get("pair",fields.get("pair_id")) or {}).get("collection", ""),"delivery_mode":"telegram_nft" if fields.get("pair_id") else "catalog","fee_profile_id":fields.get("fee_profile_id","default"),"synced_at":time.time(),"url":"https://playerok.com/products/"+result["slug"]})
             elif action.startswith("order."): result=self.execute_order_operation(op)
             else: raise ValueError("Неизвестная операция")
             self.db.put("operation",op_id,{"state":"COMPLETE","completed_at":time.time(),"result":result})

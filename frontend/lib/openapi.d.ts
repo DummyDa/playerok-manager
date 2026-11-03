@@ -1405,7 +1405,12 @@ export interface components {
              * @default telegram_nft
              * @enum {string}
              */
-            delivery_mode: "manual" | "telegram_nft";
+            delivery_mode: "manual" | "telegram_nft" | "catalog";
+            /**
+             * Catalog Collection
+             * @default
+             */
+            catalog_collection: string;
             /**
              * Fee Profile Id
              * @default default
@@ -1419,10 +1424,13 @@ export interface components {
             title: string;
             /** Collection */
             collection: string;
-            /** Pair Id */
-            pair_id: string;
             /** Price */
             price: number;
+            /**
+             * Pair Id
+             * @default
+             */
+            pair_id: string;
             /**
              * Description
              * @default
