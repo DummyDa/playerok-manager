@@ -517,6 +517,7 @@ def create_app(db:Database|None=None):
 
     @app.post("/api/v1/orders/{id}/complete-manually")
     def complete_manually(id:str,payload:schemas.ManualFulfillment|None=None)->dict:
+        if payload is None:raise ValueError("Обновите страницу и подтвердите, что подарок передан покупателю. Старое действие без отправки доступно отдельно")
         from .manual_fulfillment import prepare
         oid=prepare(db,id,payload.purchase_rub if payload else None)
         return {"task_id":db.enqueue("manual_review_complete",{"order_id":oid},key="manual-review:"+oid)}

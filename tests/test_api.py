@@ -418,3 +418,10 @@ def test_manual_review_completion_rejects_submitted_purchase(db,client):
     db.put("operation","buy",{"state":"SUBMITTED","action":"order.buy","order_id":"delivery"})
     assert client.post("/api/v1/orders/delivery/complete-manually",headers=headers,json={"purchase_rub":"400"}).status_code==400
     assert not db.get("order","delivery").get("owner_delivery_requested")
+
+
+def test_old_silent_completion_client_cannot_start_delivery_settlement(db,client):
+    headers=authenticate(client)
+    response=client.post("/api/v1/orders/old-client/complete-manually",headers=headers)
+    assert response.status_code==400 and "Обновите страницу" in response.json()["detail"]
+    assert not db.list("operation")
