@@ -14,7 +14,7 @@ def context(db):
     if settings["stars_rub"] is None:raise PricingError("Задайте стоимость Star в основной панели")
     profile=db.get("fees",settings["catalog_fee_profile_id"]) or {}
     if not profile.get("configured"):raise PricingError("Настройте профиль комиссий каталога в основной панели")
-    strategy={"profit_type":settings["catalog_profit_type"],"profit_value":settings["catalog_profit_value"],"profit_basis":"purchase","round_step":1}
+    strategy={"profit_type":settings["catalog_profit_type"],"profit_value":settings["catalog_profit_value"],"min_profit_rub":settings["catalog_min_profit_rub"],"profit_basis":"purchase","round_step":1}
     transfer=25*D(settings["stars_rub"])
     premium=D(0)
     a,b0=net_coefficients(profile.get("fees",[]),0,rate)
@@ -23,13 +23,14 @@ def context(db):
     percent=target/100 if strategy["profit_type"]=="percent" else D(0)
     fixed_gain=target if strategy["profit_type"]=="rub" else D(0)
     return {"rate":rate,"profile":profile,"strategy":strategy,"transfer":transfer,"premium":premium,
+            "minimum_ton_multiplier":rate*(1-(b-b0))/a,"minimum_fixed_rub":(transfer+premium+D(strategy["min_profit_rub"])-b0)/a,
             "ton_multiplier":rate*(1+percent-(b-b0))/a,"fixed_rub":(transfer+premium+fixed_gain-b0)/a}
 
 
 def public_policy(db):
     try:
         c=context(db)
-        return {"ready":True,"ton_multiplier":str(c["ton_multiplier"]),"fixed_rub":str(c["fixed_rub"]),"rate":str(c["rate"]),"transfer_stars":25,"manual_delivery":bool(db.settings().get("manual_gift_delivery"))}
+        return {"ready":True,**{k:str(c[k]) for k in ("ton_multiplier","fixed_rub","minimum_ton_multiplier","minimum_fixed_rub")},"rate":str(c["rate"]),"transfer_stars":25,"manual_delivery":bool(db.settings().get("manual_gift_delivery"))}
     except PricingError as exc:
         return {"ready":False,"error":str(exc)}
     except Exception:

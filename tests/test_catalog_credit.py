@@ -493,14 +493,14 @@ def test_paid_promotion_select_deliver_and_close_original_deal_with_buyer_messag
     assert {m["state"] for m in db.list("catalog_message")}=={"SENT","SKIPPED"}
 
 
-@pytest.mark.parametrize("shortage",[10,20,21])
+@pytest.mark.parametrize("shortage",[0,9,10,11,20])
 def test_small_shortage_is_real_discount_not_fake_revenue(db,real,shortage):
     service,gift,raw,client=real
     sale=price(db,"4")["sale_price"]
     account,_=credit.create(db,str(sale-shortage),"buyer")
     result=credit.choose(db,account,gift,sale,"buyer")
     wallet=db.get("catalog_credit_payment",account["id"])
-    if shortage<=20:
+    if shortage<=10:
         assert result["state"]=="EXECUTING"
         assert credit.D(wallet["selected_price"])==sale-shortage
         credit.fulfill(service,account["id"])

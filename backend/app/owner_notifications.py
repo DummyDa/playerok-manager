@@ -66,7 +66,7 @@ def render(db, order, event, test=False):
     link_order=order.get("funding_grant_id") or order["id"]
     if re.fullmatch(r"[0-9a-fA-F-]{36}",link_order):
         payload["reply_markup"]={"inline_keyboard":[[{"text":"📦 Заказ на Playerok","url":"https://playerok.com/deal/"+link_order}]]}
-    if not test and event=="purchased" and db.settings().get("manual_gift_delivery") and order.get("stage")!="COMPLETE":
+    if not test and event=="purchased" and order.get("stage")!="COMPLETE" and (db.settings().get("manual_gift_delivery") or order.get("stage")=="MANUAL"):
         from .owner_delivery_buttons import button
         payload.setdefault("reply_markup",{"inline_keyboard":[]})["inline_keyboard"].append([button(db,order)])
     return payload
@@ -86,21 +86,20 @@ def send_pending(db, bot):
             db.put("notification",item["id"],{"state":"SUPPRESSED"})
     chat=db.settings().get("owner_chat_id")
     if not chat:return
-    if db.settings().get("manual_gift_delivery"):
-        from .manual_delivery import allowed
-        for item in db.list("notification",100000):
-            if item.get("event")!="purchased" or item.get("state")!="SENT" or not item.get("message_id") or item.get("manual_button_skip"):continue
-            keyboard=item.get("payload",{}).get("reply_markup",{}).get("inline_keyboard",[])
-            if any(str(b.get("callback_data","")).startswith("md:") for row in keyboard for b in row):continue
-            order=db.get("order",item.get("order_id"))
-            if not allowed(db,order):continue
-            payload=render(db,order,"purchased")
-            try:bot.request("editMessageReplyMarkup",{"chat_id":chat,"message_id":item["message_id"],"reply_markup":payload["reply_markup"]})
-            except Exception as exc:
-                db.put("notification",item["id"],{"manual_button_skip":True,"manual_button_error":db.redact(exc)})
-                continue
-            db.put("notification",item["id"],{"payload":{**item["payload"],"reply_markup":payload["reply_markup"]}})
-            break
+    from .owner_delivery_buttons import eligible
+    for item in db.list("notification",100000):
+        if item.get("event")!="purchased" or item.get("state")!="SENT" or not item.get("message_id") or item.get("manual_button_skip"):continue
+        keyboard=item.get("payload",{}).get("reply_markup",{}).get("inline_keyboard",[])
+        if any(str(b.get("callback_data","")).startswith("md:") for row in keyboard for b in row):continue
+        order=db.get("order",item.get("order_id"))
+        if not eligible(db,order):continue
+        payload=render(db,order,"purchased")
+        try:bot.request("editMessageReplyMarkup",{"chat_id":chat,"message_id":item["message_id"],"reply_markup":payload["reply_markup"]})
+        except Exception as exc:
+            db.put("notification",item["id"],{"manual_button_skip":True,"manual_button_error":db.redact(exc)})
+            continue
+        db.put("notification",item["id"],{"payload":{**item["payload"],"reply_markup":payload["reply_markup"]}})
+        break
     pending=sorted((n for n in db.list("notification",100000) if n.get("state")=="PENDING" and n.get("event") in EVENTS),key=lambda n:n["updated_at"])
     for item in pending[:5]:
         with db.tx() as session:

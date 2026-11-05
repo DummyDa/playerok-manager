@@ -117,11 +117,23 @@ function rubRate() {
   const rate = Number(fx?.rate), age = Date.now() / 1000 - Number(fx?.fetched_at);
   return Number.isFinite(rate) && rate > 0 && age >= -60 && age < 900 ? rate : 0;
 }
+function policyRub(value, p=sourceStatus?.pricing) {
+  if(!p?.ready)return NaN;
+  const base=Number(value)*Number(p.ton_multiplier)+Number(p.fixed_rub);
+  const minimum=p.minimum_ton_multiplier===undefined?base:Number(value)*Number(p.minimum_ton_multiplier)+Number(p.minimum_fixed_rub);
+  return Math.ceil(Math.max(base,minimum));
+}
+function policyTon(value) {
+  const p=sourceStatus?.pricing;
+  const base=(Number(value)-Number(p?.fixed_rub || 0))/Number(p?.ton_multiplier || browseFxRate);
+  const minimum=p?.minimum_ton_multiplier===undefined?base:(Number(value)-Number(p.minimum_fixed_rub))/Number(p.minimum_ton_multiplier);
+  return Math.max(0,Math.min(base,minimum));
+}
 function rubPrice(value) {
   if(paidChoice && !["DELETED","EXHAUSTED"].includes(paidChoice.state))return "Получить";
   const p = sourceStatus?.pricing;
   if (!p?.ready || !rubRate()) return "Цена недоступна";
-  return `${Math.ceil(Number(value) * Number(p.ton_multiplier) + Number(p.fixed_rub)).toLocaleString("ru-RU")} ₽`;
+  return `${policyRub(value,p).toLocaleString("ru-RU")} ₽`;
 }
 function updateCurrency() {
   const rate = rubRate();
@@ -224,7 +236,7 @@ async function loadGifts(append = false, quiet = false) {
   Object.entries(state).forEach(([key, value]) => {
     if (!value) return;
     const price = key === "min_price" || key === "max_price";
-    if (!price || browseFxRate) query.set(key, price ? Math.max(0, (Number(value) - Number(sourceStatus?.pricing?.fixed_rub || 0)) / Number(sourceStatus?.pricing?.ton_multiplier || browseFxRate)) : value);
+    if (!price || browseFxRate) query.set(key, price ? policyTon(value) : value);
   });
   query.set("offset", append ? nextOffset : 0);
   query.set("limit", 30);
@@ -376,7 +388,7 @@ async function verifyGift() {
     window.open(currentGift.checkout_url,"_blank","noopener"); return;
   }
   const selectedId=currentGift.id;
-  const shown=currentGift.price_rub ?? Math.ceil(Number(currentGift.price_ton)*Number(sourceStatus?.pricing?.ton_multiplier)+Number(sourceStatus?.pricing?.fixed_rub));
+  const shown=policyRub(currentGift.price_ton);
   if (!sourceStatus?.pricing?.ready || !Number.isFinite(shown)) {announce("Цена пока недоступна");return;}
   const button=$("#check-gift"), output=$("#check-result");
   regularCheckoutBusy=true;
@@ -633,7 +645,7 @@ cardMotionQuery.addEventListener('change',()=>{
 
 function giftSaleRub(gift) {
   const p=sourceStatus?.pricing;
-  return p?.ready ? Math.ceil(Number(gift.price_ton)*Number(p.ton_multiplier)+Number(p.fixed_rub)) : NaN;
+  return policyRub(gift.price_ton,p);
 }
 function usesRegularCheckout(){return (paidChoice?.state==="EXHAUSTED" || (paidChoice?.closed_after_delivery && paidChoice.selected?.id!==currentGift?.id)) && Number(paidChoice.balance_rub ?? paidChoice.paid_rub)<=0;}
 function realCredit(value){if(value.test!==false)throw new Error("Тестовые коды отключены. Создайте новый код в панели каталога.");return value;}
@@ -647,7 +659,7 @@ function renderPaidDetail() {
   const selected=paidChoice.selected?.id===currentGift.id;
   const available=Number(paidChoice.balance_rub ?? paidChoice.paid_rub);
   const regular=usesRegularCheckout();
-  const price=giftSaleRub(currentGift),due=selected && paidChoice.state!=="AWAITING_SELECTION" ? Number(paidChoice.topup_rub||0) : price-available<=20?0:Math.max(90,price-available);
+  const price=giftSaleRub(currentGift),due=selected && paidChoice.state!=="AWAITING_SELECTION" ? Number(paidChoice.topup_rub||0) : price-available<=10?0:Math.max(90,price-available);
   const shown=!regular && selected && paidChoice.state!=="AWAITING_SELECTION" ? paidChoice.selected_price : price;
   panel.innerHTML=`Баланс заказа: <strong>${integer(available)} ₽</strong>${Number(paidChoice.reserved_rub)>0?`<br>Зарезервировано: <strong>${integer(paidChoice.reserved_rub)} ₽</strong>`:""}${regular?`<br>Цена подарка: <strong>${Number.isFinite(Number(shown))?integer(shown)+" ₽":"уточняется"}</strong>`:due>0?`<br>Доплата: <strong>${integer(due)} ₽</strong>`:"<br><strong>Подарок доступен без доплаты</strong>"}${regular?"":`<br>Получатель: <strong>@${esc(paidChoice.recipient)}</strong>`}`;
   if(regular){

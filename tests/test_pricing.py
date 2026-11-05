@@ -16,6 +16,36 @@ def test_sale_profit_basis_and_fixed_target():
     assert calculate(100,0,zero,{"profit_value":20,"profit_basis":"sale"})["sale_price"]==125
     assert calculate(100,10,zero,{"profit_type":"rub","profit_value":30})["sale_price"]==140
 
+
+@pytest.mark.parametrize("purchase,value,minimum,profit",[(300,10,50,50),(1000,10,50,100),(300,10,0,30)])
+def test_minimum_profit_is_a_floor_not_an_extra_charge(purchase,value,minimum,profit):
+    result=calculate(purchase,0,{"configured":True,"fees":[]},{"profit_value":value,"min_profit_rub":minimum})
+    assert D(result["profit_rub"])==profit
+
+
+def test_minimum_profit_after_all_costs_and_sale_basis():
+    from backend.app.pricing import required_profit
+    strategy={"profit_value":10,"profit_basis":"sale","min_profit_rub":50}
+    result=calculate(300,25,PROFILE,strategy,promotion_rub=25)
+    assert D(result["profit_rub"])>=50
+    assert D(result["profit_rub"])>=D(result["sale_price"])*D('.1')
+    assert required_profit(300,400,strategy)==50
+    assert required_profit(1000,1500,strategy)==150
+    with pytest.raises(PricingError):calculate(300,0,PROFILE,{"min_profit_rub":-1})
+
+
+def test_catalog_policy_with_floor_matches_actual_price(db):
+    from backend.app.catalog_pricing import public_policy,price
+    from decimal import ROUND_CEILING
+    db.configure(ton_rate_mode="manual",manual_ton_rub="100",stars_rub="1.26",catalog_profit_type="percent",catalog_profit_value="10",catalog_min_profit_rub="50")
+    db.put("fees","default",PROFILE)
+    policy=public_policy(db)
+    for ton in ["0.1","1","3","5","10","100"]:
+        predicted=max(D(ton)*D(policy["ton_multiplier"])+D(policy["fixed_rub"]),D(ton)*D(policy["minimum_ton_multiplier"])+D(policy["minimum_fixed_rub"]))
+        result=price(db,ton)
+        assert int(predicted.to_integral_value(rounding=ROUND_CEILING))==result["sale_price"]
+        assert D(result["profit_rub"])>=max(50,D(ton)*100*D('.1'))
+
 def test_competitor_cannot_break_safe_floor():
     assert calculate(1000,0,PROFILE,{"profit_value":5,"competitor_offset":100},100)["sale_price"]==1258
 

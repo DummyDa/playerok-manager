@@ -54,6 +54,8 @@ def calculate(purchase_rub, transfer_rub, profile, strategy, competitor_price=No
     if purchase <= 0 or transfer < 0 or promotion < 0: raise PricingError("Нет достоверной себестоимости")
     a, b = net_coefficients(profile.get("fees", []), purchase, ton_rub)
     target = D(strategy.get("profit_value", 5))
+    minimum = D(strategy.get("min_profit_rub", 0))
+    if minimum < 0:raise PricingError("Минимальная прибыль не может быть отрицательной")
     if target < 0: raise PricingError("Целевая прибыль не может быть отрицательной")
     denominator = a
     if strategy.get("profit_type", "percent") == "rub": gain = target
@@ -61,7 +63,8 @@ def calculate(purchase_rub, transfer_rub, profile, strategy, competitor_price=No
         denominator -= target/100; gain = D(0)
     else: gain = purchase*target/100
     if denominator <= 0: raise PricingError("Указанная прибыль недостижима")
-    safe = (purchase + transfer + promotion + gain - b)/denominator
+    safe = max((purchase + transfer + promotion + gain - b)/denominator,
+               (purchase + transfer + promotion + minimum - b)/a)
     desired = safe
     if competitor_price is not None:
         competitor = D(competitor_price)
@@ -100,5 +103,5 @@ def calculate_with_premium(purchase,transfer,profile,strategy,premium_cost,compe
 
 def required_profit(purchase,sale,strategy):
     target=D(strategy.get("profit_value",5))
-    if strategy.get("profit_type","percent")=="rub":return target
-    return D(sale if strategy.get("profit_basis","purchase")=="sale" else purchase)*target/100
+    gain=target if strategy.get("profit_type","percent")=="rub" else D(sale if strategy.get("profit_basis","purchase")=="sale" else purchase)*target/100
+    return max(gain,D(strategy.get("min_profit_rub",0)))

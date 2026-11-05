@@ -249,7 +249,7 @@ class Service:
         transfer=D(25 if lot.get("catalog_gift_id") else settings["transfer_stars_reserve"])*D(settings["stars_rub"])
         # A paid order cannot be repriced: listing profit targets/price ceilings must
         # not prevent evaluating its actual margin at the already paid price.
-        calculation_strategy={**strategy,"profit_value":0,"max_price":None} if sale is not None else strategy
+        calculation_strategy={**strategy,"profit_value":0,"min_profit_rub":0,"max_price":None} if sale is not None else strategy
         result=calculate(purchase,transfer,profile,calculation_strategy,competitor,ton_rub=fx["rate"])
         mode=strategy.get("premium_mode","auto")
         schedule=self.db.get("promotion_schedule",lot_id) or {}
@@ -891,6 +891,10 @@ class Service:
                 finally:self.db.configure(bot_offset=update["update_id"]+1)
                 continue
             message=update.get("message") or {};sender=message.get("from") or {};chat=message.get("chat") or {}
+            from .owner_delivery_buttons import handle_reply
+            if handle_reply(self,bot,message):
+                self.db.configure(bot_offset=update["update_id"]+1)
+                continue
             command=str(message.get("text","")).split("@",1)[0].strip()
             allowed=(sender.get("id")==settings.get("owner_chat_id")) if settings.get("owner_chat_id") else bool(owner) and sender.get("username","").lower()==owner
             if chat.get("type")=="private" and allowed and command=="/start":

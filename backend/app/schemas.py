@@ -44,6 +44,7 @@ class Settings(Strict):
     catalog_title_template:str|None=Field(default=None,min_length=1,max_length=200)
     catalog_profit_type:Literal["percent","rub"]|None=None
     catalog_profit_value:Decimal|None=Field(default=None,ge=0)
+    catalog_min_profit_rub:Decimal|None=Field(default=None,ge=0,le=10000000)
     catalog_fee_profile_id:str|None=Field(default=None,min_length=1,max_length=100)
     delivery_transport:Literal["mtproto","kurigram","chrome_extension"]|None=None
     emergency_stop:bool|None=None
@@ -103,6 +104,7 @@ class Strategy(Strict):
     premium_purchases_per_sale:int=Field(default=1,ge=1,le=100)
     profit_type:Literal["percent","rub"]="percent"
     profit_value:Decimal=Field(default=Decimal(5),ge=0)
+    min_profit_rub:Decimal=Field(default=Decimal(0),ge=0,le=10000000)
     profit_basis:Literal["purchase","sale"]="purchase"
     min_price:int=Field(default=0,ge=0)
     max_price:int|None=Field(default=None,ge=1)

@@ -58,7 +58,7 @@ DEFAULTS = {
     "stars_rub": None, "transfer_stars_reserve": 25, "purchase_limit_rub": "0",
     "catalog_public_url": "", "funding_paid_template": "", "funding_started_at": None,
     "catalog_promo_started_at":None,"catalog_promo_paid_template":PROMO,"catalog_topup_paid_template":TOPUP,
-    "catalog_title_template": "🎁 {collection} #{number} | {model} | ⚡ АВТОВЫДАЧА", "catalog_profit_type": "percent", "catalog_profit_value": "10", "catalog_fee_profile_id": "default",
+    "catalog_title_template": "🎁 {collection} #{number} | {model} | ⚡ АВТОВЫДАЧА", "catalog_profit_type": "percent", "catalog_profit_value": "10", "catalog_min_profit_rub": "0", "catalog_fee_profile_id": "default",
     "ton_rate_mode": "auto", "manual_ton_rub": None,
     "daily_purchase_limit_rub": "0", "daily_promotion_limit_rub": "0",
     "quote_interval": 3600, "competitor_interval": 900, "quote_max_age": 7200,

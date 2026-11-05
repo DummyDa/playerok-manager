@@ -1866,6 +1866,8 @@ export interface components {
             catalog_profit_type?: ("percent" | "rub") | null;
             /** Catalog Profit Value */
             catalog_profit_value?: number | string | null;
+            /** Catalog Min Profit Rub */
+            catalog_min_profit_rub?: number | string | null;
             /** Catalog Fee Profile Id */
             catalog_fee_profile_id?: string | null;
             /** Delivery Transport */
@@ -1946,6 +1948,11 @@ export interface components {
              * @default 5
              */
             profit_value: number | string;
+            /**
+             * Min Profit Rub
+             * @default 0
+             */
+            min_profit_rub: number | string;
             /**
              * Profit Basis
              * @default purchase

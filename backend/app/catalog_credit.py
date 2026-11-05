@@ -162,8 +162,8 @@ def choose(db,payment,gift,shown_price,recipient):
     if available<=0:raise ValueError("Баланс использован. Создайте обычный лот для новой покупки")
     catalog_price=shown_price
     difference=max(D(0),D(shown_price)-available)
-    allowance=difference if difference<=20 else D(0)
-    difference=D(0) if difference<=20 else max(D(90),difference)
+    allowance=difference if difference<=10 else D(0)
+    difference=D(0) if difference<=10 else max(D(90),difference)
     # One payment/code buys one gift: all available funds are allocated.
     charged=available+difference
     if difference!=difference.to_integral_value():raise ValueError("Playerok принимает цену в целых рублях. Владелец должен скорректировать дробный остаток баланса")
