@@ -1,4 +1,4 @@
-param([string]$Server = "144.31.158.11", [string]$SshUser = "root")
+param([string]$Server = "31.77.146.53", [string]$SshUser = "root")
 $ErrorActionPreference = "Stop"
 $projectFolder = Split-Path -Parent $PSScriptRoot
 $keyFile = Join-Path $env:USERPROFILE ".ssh\id_ed25519_playerok_vps"
