@@ -191,6 +191,8 @@ class Database:
             with self.sessions() as s: return s.scalar(select(Task.id).where(Task.dedupe == key))
 
     def initialize(self):
+        from .catalog_credit import purge_removed_history
+        purge_removed_history(self)
         previous=self.get("settings") or {}
         legacy_preview=previous.pop("dry_run",False)
         if legacy_preview:

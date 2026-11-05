@@ -17,15 +17,15 @@ def admin_view(db,payment):
 def router(db):
     routes=APIRouter(prefix="/api/v1/catalog-codes",tags=["Catalog codes"])
 
-    def get_payment(id):
+    def get_payment(id,include_removed=False):
         value=db.get("catalog_credit_payment",id)
-        if not value:raise HTTPException(404,"Код не найден")
+        if not value or (value.get("owner_deleted") and not include_removed):raise HTTPException(404,"Код не найден")
         return value
 
     @routes.get("")
     def listing(response:Response,status:str=Query("all",pattern="^(all|valid|invalid)$"))->dict:
         response.headers["Cache-Control"]="no-store"
-        rows=sorted(db.list("catalog_credit_payment",100000),key=lambda p:p.get("created_at",0),reverse=True)
+        rows=sorted((p for p in db.list("catalog_credit_payment",100000) if not p.get("owner_deleted")),key=lambda p:p.get("created_at",0),reverse=True)
         counts={"all":len(rows),"valid":sum(credit.valid(p) for p in rows)}
         counts["invalid"]=counts["all"]-counts["valid"]
         rows=[p for p in rows if status=="all" or credit.valid(p)==(status=="valid")]
@@ -47,7 +47,8 @@ def router(db):
     @routes.delete("/{id}")
     def remove(id:str,response:Response)->dict:
         response.headers["Cache-Control"]="no-store"
-        return admin_view(db,credit.remove(db,get_payment(id)))
+        credit.remove(db,get_payment(id,include_removed=True))
+        return {"id":id,"deleted":True}
 
     @routes.get("/{id}/events")
     def events(id:str,response:Response)->dict:

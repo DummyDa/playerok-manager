@@ -75,16 +75,57 @@ def test_delivered_single_use_code_cannot_be_reopened_and_keeps_history(db,owner
     assert code["code"] not in json.dumps(events)
 
 
-def test_delete_revokes_code_and_existing_cookie_but_keeps_history(db,owner):
+def test_delete_revokes_code_and_cookie_and_removes_code_history(db,owner):
     client,headers=owner;code=make(owner)
     token=testing.activate(db,code["code"],"local")
     result=client.delete(f"/api/v1/catalog-codes/{code['id']}",headers=headers)
-    assert result.status_code==200 and not result.json()["valid"]
+    assert result.status_code==200 and result.json()["deleted"]
     with pytest.raises(ValueError):testing.activate(db,code["code"],"other")
     with pytest.raises(ValueError,match="удалён"):testing.session(db,token)
-    assert client.patch(f"/api/v1/catalog-codes/{code['id']}/balance",headers=headers,json={"balance_rub":"500"}).status_code==400
-    assert client.get("/api/v1/catalog-codes?status=invalid").json()["items"][0]["state"]=="DELETED"
-    assert any(e["action"]=="DELETED" for e in client.get(f"/api/v1/catalog-codes/{code['id']}/events").json()["items"])
+    assert client.patch(f"/api/v1/catalog-codes/{code['id']}/balance",headers=headers,json={"balance_rub":"500"}).status_code==404
+    for status in ["all","valid","invalid"]:
+        data=client.get("/api/v1/catalog-codes?status="+status).json()
+        assert data["items"]==[] and data["counts"]=={"all":0,"valid":0,"invalid":0}
+    assert client.get(f"/api/v1/catalog-codes/{code['id']}/events").status_code==404
+    assert not [e for e in db.list("catalog_credit_event") if e.get("payment_id")==code["id"]]
+    assert client.delete(f"/api/v1/catalog-codes/{code['id']}",headers=headers).status_code==200
+
+
+def test_deleting_code_preserves_other_codes_and_financial_provenance(db,owner):
+    client,headers=owner;first=make(owner);second=make(owner)
+    receipt=db.put("catalog_credit_receipt","paid",{"credit_id":first["id"],"amount_rub":"1000","accepted":True,"status":"PAID"})
+    ledger=db.put("ledger","purchase",{"order_id":"issued","type":"purchase","amount_rub":"500"})
+    client.delete(f"/api/v1/catalog-codes/{first['id']}",headers=headers)
+    assert db.get("catalog_credit_receipt","paid")==receipt
+    assert db.get("ledger","purchase")==ledger
+    assert [r["id"] for r in client.get("/api/v1/catalog-codes").json()["items"]]==[second["id"]]
+    assert client.get(f"/api/v1/catalog-codes/{second['id']}/events").json()["items"]
+
+
+def test_old_owner_deletions_are_purged_but_used_codes_remain_history(db,owner):
+    client,headers=owner;removed=make(owner);used=make(owner)
+    db.put("catalog_credit_payment",removed["id"],{"state":"DELETED","deleted_at":time.time()-100})
+    db.put("catalog_credit_payment",used["id"],{"state":"DELETED","closed_after_delivery":True})
+    db.initialize()
+    assert db.get("catalog_credit_payment",removed["id"])["owner_deleted"]
+    assert not [e for e in db.list("catalog_credit_event") if e["payment_id"]==removed["id"]]
+    assert [r["id"] for r in client.get("/api/v1/catalog-codes").json()["items"]]==[used["id"]]
+    client.delete(f"/api/v1/catalog-codes/{used['id']}",headers=headers)
+    assert client.get("/api/v1/catalog-codes").json()["items"]==[]
+
+
+def test_deleted_code_history_is_not_recreated_by_audit_or_recovery(db,owner):
+    from backend.app.operations import recover
+    client,headers=owner;code=make(owner)
+    stale_payment=db.get("catalog_credit_payment",code["id"])
+    client.delete(f"/api/v1/catalog-codes/{code['id']}",headers=headers)
+    payment=db.get("catalog_credit_payment",code["id"])
+    testing.audit(db,payment,"MESSAGE_SENT")
+    testing.audit(db,stale_payment,"ACTIVATED")
+    db.put("catalog_message","unknown-message",{"state":"SUBMITTED","credit_id":code["id"],"deal_id":"payment"})
+    recover(db)
+    assert db.get("catalog_message","unknown-message")["state"]=="UNKNOWN"
+    assert not [e for e in db.list("catalog_credit_event") if e["payment_id"]==code["id"]]
 
 
 def test_active_topup_amount_is_not_changed_by_admin(db,owner):

@@ -8,8 +8,8 @@ def test_review_code_can_be_revoked_without_erasing_payment_history(db):
     removed=remove(db,db.get("catalog_credit_payment",wallet["id"]))
     assert removed["state"]=="DELETED" and not valid(removed)
     assert removed["paid_rub"]=="500" and removed["reservation_rub"]=="0"
-    event=next(e for e in db.list("catalog_credit_event") if e["action"]=="DELETED")
-    assert event["previous_state"]=="REVIEW" and event["reserved_before_rub"]=="500"
+    assert removed["owner_deleted"]
+    assert not [e for e in db.list("catalog_credit_event") if e.get("payment_id")==wallet["id"]]
 
 
 def test_review_shows_actual_topup_rejection_without_mutating_balance(db):

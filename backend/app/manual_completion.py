@@ -47,7 +47,8 @@ def complete(db,oid):
         if wallet:
             used=sum((Decimal(str(p["price_rub"])) for p in wallet.get("purchases",[])),Decimal(0))
             put("catalog_credit_payment",cid,{**wallet,"state":"DELETED","closed_manually":True,"closed_at":stamp,"reservation_rub":"0","adjustment_rub":str(used-Decimal(str(wallet.get("paid_rub",0)))),"notice":"Заказ завершён продавцом"})
-            put("catalog_credit_event",uid(),{"payment_id":cid,"action":"OWNER_SILENT_COMPLETION","order_id":oid,"at":stamp})
+            if not wallet.get("owner_deleted"):
+                put("catalog_credit_event",uid(),{"payment_id":cid,"action":"OWNER_SILENT_COMPLETION","order_id":oid,"at":stamp})
         put("event",uid(),{"action":"owner_silent_completion","title":"Заказ завершён продавцом без внешних действий","order_id":oid,"level":"INFO"})
         conn.commit()
     return {"completed":True,"silent":True}

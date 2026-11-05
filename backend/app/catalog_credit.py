@@ -35,7 +35,13 @@ def valid(payment):
 
 
 def audit(db,payment,action,**values):
-    db.put("catalog_credit_event",uid(),{"payment_id":payment["id"],"action":action,"at":time.time(),**values})
+    if payment.get("owner_deleted"):return
+    with db.engine.connect() as conn:
+        conn.exec_driver_sql("BEGIN IMMEDIATE");table=Entity.__table__
+        current=conn.execute(select(table.c.data).where(table.c.kind=="catalog_credit_payment",table.c.id==payment["id"])).scalar_one_or_none()
+        if current and not current.get("owner_deleted"):
+            conn.execute(insert(table).values(kind="catalog_credit_event",id=uid(),data={"payment_id":payment["id"],"action":action,"at":time.time(),**values},updated=time.time()))
+        conn.commit()
 
 
 def save_current(db,payment,values,event=None,extra=()):
@@ -46,7 +52,7 @@ def save_current(db,payment,values,event=None,extra=()):
             .values(data={**previous,**values},updated=time.time())).rowcount)
         if changed:
             for kind,key,data in extra:session.add(Entity(kind=kind,id=key,data=data,updated=time.time()))
-        if changed and event:
+        if changed and event and not payment.get("owner_deleted"):
             session.add(Entity(kind="catalog_credit_event",id=uid(),data={"payment_id":payment["id"],"at":time.time(),"before_rub":str(balance(payment)),"after_rub":str(balance({**payment,**values})),**event},updated=time.time()))
         return changed
 
@@ -240,7 +246,8 @@ def handle_payment(service,order):
                 values.update(state="REVIEW",notice="Поздняя доплата при активном выборе. Нужна сверка")
             else:values.update(state="AWAITING_SELECTION",reservation_rub="0",notice="Доплата зачислена. Подтвердите новый выбор подарка")
         conn.execute(update(table).where(table.c.kind=="catalog_credit_payment",table.c.id==cid).values(data={**raw,**values},updated=time.time()))
-        conn.execute(insert(table).values(kind="catalog_credit_event",id=uid(),data={"payment_id":cid,"action":"TOPUP_CONFIRMED" if accepted else "PAYMENT_REVIEW","at":time.time(),"deal_id":order["id"],"amount_rub":order["sale_rub"]},updated=time.time()))
+        if not raw.get("owner_deleted"):
+            conn.execute(insert(table).values(kind="catalog_credit_event",id=uid(),data={"payment_id":cid,"action":"TOPUP_CONFIRMED" if accepted else "PAYMENT_REVIEW","at":time.time(),"deal_id":order["id"],"amount_rub":order["sale_rub"]},updated=time.time()))
         conn.commit()
     db.put("order",order["id"],{**order,"stage":"FUNDING_PAYMENT" if accepted else "MANUAL","catalog_topup_credit_id":cid,"playerok_status":order["status"],"reason":None if accepted else "Не выдавать: доплата требует сверки/возврата"})
     if accepted:db.put("catalog_checkout",checkout["id"],{"state":"PAID"})
@@ -380,12 +387,29 @@ def change_balance(db,payment,amount,note=""):
 
 
 def remove(db,payment):
-    if payment["state"]=="DELETED":return payment
-    if payment["state"]=="EXECUTING":raise ValueError("Сначала дождитесь остановки активной выдачи")
-    if not save_current(db,payment,{"state":"DELETED","reservation_rub":"0","deleted_at":time.time()},{"action":"DELETED","previous_state":payment["state"],"reserved_before_rub":payment.get("reservation_rub","0")}):raise ValueError("Заказ изменился. Обновите список")
+    # Keep payment provenance for settlement/replay protection, but remove the
+    # owner's code entry and its event history in one transaction.
+    with db.engine.connect() as conn:
+        conn.exec_driver_sql("BEGIN IMMEDIATE");table=Entity.__table__
+        current=conn.execute(select(table.c.data).where(table.c.kind=="catalog_credit_payment",table.c.id==payment["id"])).scalar_one()
+        if current.get("state")=="EXECUTING":raise ValueError("Сначала дождитесь остановки активной выдачи")
+        previous={k:v for k,v in payment.items() if k not in {"id","updated_at"}}
+        if current!=previous and not current.get("owner_deleted"):raise ValueError("Заказ изменился. Обновите список")
+        values={**current,"state":"DELETED","owner_deleted":True,"reservation_rub":"0","deleted_at":current.get("deleted_at") or time.time()}
+        if values!=current:
+            conn.execute(table.update().where(table.c.kind=="catalog_credit_payment",table.c.id==payment["id"]).values(data=values,updated=time.time()))
+        conn.execute(table.delete().where(table.c.kind=="catalog_credit_event",table.c.data["payment_id"].as_string()==payment["id"]))
+        conn.commit()
     if payment.get("checkout_id"):
         checkout=db.get("catalog_checkout",payment["checkout_id"])
         if checkout and checkout["state"]=="READY":db.put("catalog_checkout",checkout["id"],{"expires_at":time.time()});db.enqueue("catalog_expire")
     return db.get("catalog_credit_payment",payment["id"])
+
+
+def purge_removed_history(db):
+    """Upgrade explicit owner deletions; used gifts remain ordinary history."""
+    for payment in db.list("catalog_credit_payment",100000):
+        if payment.get("state")=="DELETED" and payment.get("deleted_at"):
+            remove(db,payment)
 
 

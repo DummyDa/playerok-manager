@@ -27,7 +27,9 @@ def recover(db):
     for message in db.list("catalog_message",100000):
         if message["state"]=="SUBMITTED":
             db.put("catalog_message",message["id"],{"state":"UNKNOWN","error":"Отправка прервана перезапуском; повтор только после сверки чата"})
-            db.put("catalog_credit_event",uid(),{"payment_id":message["credit_id"],"action":"MESSAGE_UNKNOWN","at":time.time(),"deal_id":message["deal_id"]})
+            from .catalog_credit import audit
+            payment=db.get("catalog_credit_payment",message["credit_id"])
+            if payment:audit(db,payment,"MESSAGE_UNKNOWN",deal_id=message["deal_id"])
         elif message["state"]=="QUEUED":db.enqueue("catalog_message",{"message_id":message["id"]},key="catalog_message:"+message["id"])
     for message in db.list("grant_message",100000):
         if message.get("state")=="SUBMITTED":db.put("grant_message",message["id"],{"state":"UNKNOWN"})
