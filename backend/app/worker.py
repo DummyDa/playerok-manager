@@ -20,15 +20,16 @@ class Worker:
         expire(self.db)
         s=self.db.settings()
         intervals={"check":300,"sync_lots":300,"fx":300,"quotes":30,"competitors":s["competitor_interval"],
-                   "buyer_support":30,"grant_tick":15,"catalog_credit_tick":15,"catalog_expire":30,"orders":60,"bot":5,"promotions":30,"backup":86400,"check_updates":900,"browser_delivery":5}
+                   "buyer_support":30,"grant_tick":15,"catalog_credit_tick":15,"catalog_expire":30,"orders":60,"bot":5,"promotions":30,"backup":86400,"check_updates":900,"browser_delivery":5,"mrkt_balance":60}
         for kind,interval in intervals.items():
             if kind in {"sync_lots","orders","competitors","buyer_support"} and not self.db.secret("playerok_cookies"):continue
             if kind=="quotes" and not has_user_session(self.db):continue
+            if kind=="mrkt_balance" and (not has_user_session(self.db) or not s["notifications_enabled"]):continue
             if kind=="bot" and not s["notifications_enabled"]:continue
             if kind=="promotions" and (s["emergency_stop"] or not s["promotions_enabled"]):continue
             record=self.db.get("clock",kind)
             if not record or record.get("next",0)<=time.time() or (kind=="quotes" and record.get("next",0)>time.time()+30):
-                self.db.enqueue(kind)
+                self.db.enqueue(kind,key="balance-monitor" if kind=="mrkt_balance" else None)
                 self.db.put("clock",kind,{"next":time.time()+interval})
 
     def claim(self):
@@ -114,6 +115,9 @@ class Worker:
             from .updates import check
             return check(self.db)
         service=self.service
+        if kind=="mrkt_balance":
+            from .balance_alerts import observe
+            return observe(self.db,service.mrkt.balances())
         if kind=="buyer_support":
             from .buyer_support import poll
             return poll(service)

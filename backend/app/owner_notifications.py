@@ -7,6 +7,8 @@ import time
 from .db import Entity
 from .pricing import D
 
+EVENTS={"paid","purchased","delivered","support","balance_wait","low_balance"}
+
 
 def amount(value, signed=False):
     number=D(value)
@@ -80,7 +82,7 @@ def queue(db, order, event):
 def send_pending(db, bot):
     # Retire old technical alerts and never replay a possibly submitted message.
     for item in db.list("notification",100000):
-        if item.get("event") not in {"paid","purchased","delivered","support"} and item.get("state")=="PENDING":
+        if item.get("event") not in EVENTS and item.get("state")=="PENDING":
             db.put("notification",item["id"],{"state":"SUPPRESSED"})
     chat=db.settings().get("owner_chat_id")
     if not chat:return
@@ -99,7 +101,7 @@ def send_pending(db, bot):
                 continue
             db.put("notification",item["id"],{"payload":{**item["payload"],"reply_markup":payload["reply_markup"]}})
             break
-    pending=sorted((n for n in db.list("notification",100000) if n.get("state")=="PENDING" and n.get("event") in {"paid","purchased","delivered","support"}),key=lambda n:n["updated_at"])
+    pending=sorted((n for n in db.list("notification",100000) if n.get("state")=="PENDING" and n.get("event") in EVENTS),key=lambda n:n["updated_at"])
     for item in pending[:5]:
         with db.tx() as session:
             row=session.get(Entity,("notification",item["id"]))

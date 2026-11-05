@@ -293,6 +293,7 @@ def fulfill(service,cid):
 
 def failed_order(db,oid,error,submitted=False):
     order=db.get("order",oid) or {};cid=order.get("catalog_credit_id")
+    if order.get("stage")=="WAITING_BALANCE":return
     if not cid:return
     credit=db.get("catalog_credit_payment",cid)
     if not credit or credit["state"]=="DELETED" or credit.get("fulfillment_order_id")!=oid or any(p.get("order_id")==oid for p in purchases(credit)):return

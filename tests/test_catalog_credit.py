@@ -43,6 +43,33 @@ def drive(service,oid):
     raise AssertionError(service.db.get("order",oid))
 
 
+@pytest.mark.parametrize("low_balance",[{"mrkt_ton":"1","stars":100},{"mrkt_ton":"20","stars":0}])
+def test_insufficient_mrkt_balance_keeps_buyer_waiting_then_owner_retries(db,real,low_balance):
+    from backend.app.balance_alerts import retry
+    service,gift,raw,client=real
+    db.configure(notifications_enabled=True,owner_chat_id=77)
+    account,code=credit.create(db,"1000","buyer")
+    credit.choose(db,account,gift,price(db,"4")["sale_price"],"buyer")
+    credit.fulfill(service,account["id"])
+    oid=db.get("catalog_credit_payment",account["id"])["fulfillment_order_id"]
+    service.mrkt.balances.return_value=low_balance
+    service.process_order(oid)
+    service.execute(oid+":buy")
+    order=db.get("order",oid)
+    assert order["stage"]=="WAITING_BALANCE"
+    service.mrkt.buy.assert_not_called()
+    credit.tick(service)
+    wallet=db.get("catalog_credit_payment",account["id"])
+    assert wallet["state"]=="EXECUTING" and wallet["reservation_rub"]!="0"
+    assert not any("unavailable" in m["id"] for m in db.list("catalog_message"))
+    assert credit.view(wallet,db)["delivery_reason"].startswith("Заказ принят")
+    service.mrkt.balances.return_value={"mrkt_ton":"20","stars":100}
+    retry(db,order["balance_wait_token"])
+    drive(service,oid)
+    service.mrkt.buy.assert_called_once()
+    assert db.get("order",oid)["stage"]=="COMPLETE"
+
+
 @pytest.mark.parametrize("with_payments,fail_topup",[(False,False),(True,False),(True,True)])
 def test_manual_delivery_waits_then_settles_once_without_telegram_transfer(db,real,with_payments,fail_topup):
     from backend.app.manual_delivery import allowed,confirm

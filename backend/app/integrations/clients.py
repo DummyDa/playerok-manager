@@ -339,7 +339,10 @@ class Mrkt:
         async def stars(c):
             result = await c(functions.payments.GetStarsStatusRequest(peer=types.InputPeerSelf()))
             return int(getattr(result.balance,"amount",result.balance))
-        return {"mrkt_ton":self.ton(result["hard"]),"stars":self.telegram(stars)}
+        balance={"mrkt_ton":self.ton(result["hard"]),"stars":self.telegram(stars)}
+        from ..balance_alerts import observe
+        observe(self.db,balance)
+        return balance
 
     def buy(self, gift):
         gate(self.db,"purchases")

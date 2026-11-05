@@ -8,6 +8,11 @@ class PurchaseConfirmationPending(RateLimited):
     """Purchase was accepted; only its ownership lookup may be retried."""
     pass
 class ManualRequired(IntegrationError): pass
+class MrktBalanceRequired(ManualRequired):
+    """Known insufficient balance, detected before submitting a purchase."""
+    def __init__(self,message,resource="ton"):
+        super().__init__(message)
+        self.resource=resource
 class WriteBlocked(IntegrationError): pass
 
 def is_nft_lot(lot):

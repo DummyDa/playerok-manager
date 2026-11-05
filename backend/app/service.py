@@ -16,7 +16,7 @@ from .safety import is_nft_lot
 from .pricing_scope import can_price,collection_lot,quote_key,collection_scopes,scope
 from .operations import new_operation
 from .listing_prices import validate_price
-from .safety import RateLimited,PurchaseConfirmationPending
+from .safety import RateLimited,PurchaseConfirmationPending,MrktBalanceRequired
 from . import mrkt_retry
 
 def day_start():
@@ -489,6 +489,10 @@ class Service:
 
     def fail_operation(self,op,exc,submitted):
         op_id=op["id"]
+        if isinstance(exc,MrktBalanceRequired) and not submitted and op.get("action")=="order.buy":
+            from .balance_alerts import wait_for_balance
+            wait_for_balance(self.db,op,exc.resource)
+            return
         exhausted=isinstance(exc,RateLimited) and (mrkt_retry.expired(self.db,op.get("order_id")) or time.time()>=(self.db.get("operation",op_id) or {}).get("mrkt_retry_deadline",float("inf")))
         order=self.db.get("order",op.get("order_id")) if op.get("order_id") else None
         cid=(order or {}).get("catalog_credit_id")
@@ -748,8 +752,10 @@ class Service:
                     or (daily_limit!=0 and self.daily_spent("purchase")+cost>daily_limit)):
                 raise ManualRequired("Лимит закупки превышен")
             balance=self.mrkt.balances()
-            if D(balance["mrkt_ton"])<D(snapshot["quote_ton"]): raise ManualRequired("Недостаточно TON на MRKT")
-            if balance["stars"]<s["transfer_stars_reserve"]: raise ManualRequired("Недостаточно Stars")
+            from .balance_alerts import observe
+            observe(self.db,balance)
+            if D(balance["mrkt_ton"])<D(snapshot["quote_ton"]): raise MrktBalanceRequired("Недостаточно TON на MRKT")
+            if balance["stars"]<s["transfer_stars_reserve"]: raise MrktBalanceRequired("Недостаточно Stars",resource="stars")
             gift=quote["gift"]
             slug=gift.get("slug") or gift.get("giftSlug") or gift.get("name")
             if not slug or not re.fullmatch(r"[A-Za-z0-9]+-\d+",slug):raise ManualRequired("MRKT не вернул уникальный slug; закупка остановлена")
@@ -877,7 +883,10 @@ class Service:
         owner=self.db.config.get("OWNER_TELEGRAM_USERNAME").lstrip("@").lower()
         for update in updates:
             if update.get("callback_query"):
-                from .owner_delivery_buttons import handle
+                if str(update["callback_query"].get("data","")).startswith("mb:"):
+                    from .balance_alerts import handle
+                else:
+                    from .owner_delivery_buttons import handle
                 try:handle(self,bot,update["callback_query"])
                 finally:self.db.configure(bot_offset=update["update_id"]+1)
                 continue
