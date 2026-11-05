@@ -18,16 +18,17 @@ def prepare(db):
     return callback
 
 
-def test_owner_button_requires_confirmation_and_queues_once(db):
+def test_owner_button_confirms_on_first_click_and_queues_once(db):
     callback=prepare(db);bot=Mock();service=SimpleNamespace(db=db)
     handle(service,bot,callback)
-    with db.sessions() as s:assert not list(s.scalars(select(Task)))
-    callback["data"]=callback["data"].replace(":ask",":yes")
-    handle(service,bot,callback);handle(service,bot,callback)
+    handle(service,bot,callback)
     with db.sessions() as s:
         tasks=list(s.scalars(select(Task)))
         assert len(tasks)==1 and tasks[0].kind=="manual_delivery_confirm"
     assert not db.get("order","order").get("manual_delivery_receipt")
+    assert not any(c.args[0]=="editMessageText" for c in bot.request.call_args_list)
+    accepted=[c.args[1] for c in bot.request.call_args_list if c.args[0]=="answerCallbackQuery" and "Принято" in c.args[1]["text"]]
+    assert accepted and not accepted[0]["show_alert"]
 
 
 def test_non_owner_and_unconfirmed_click_cannot_complete_order(db):
@@ -35,6 +36,23 @@ def test_non_owner_and_unconfirmed_click_cannot_complete_order(db):
     callback["from"]["id"]=88
     handle(service,bot,callback)
     callback["from"]["id"]=77;callback["data"]=callback["data"].replace(":ask",":yes")
+    handle(service,bot,callback)
+    with db.sessions() as s:assert not list(s.scalars(select(Task)))
+
+
+def test_existing_telegram_button_also_works_in_one_click(db):
+    callback=prepare(db);token=callback["data"].split(":")[1]
+    db.put("owner_delivery_button",token,{"state":"READY","order_id":"order"},merge=False)
+    handle(SimpleNamespace(db=db),Mock(),callback)
+    with db.sessions() as s:assert len(list(s.scalars(select(Task))))==1
+
+
+def test_button_cannot_confirm_a_different_recipient_or_message(db):
+    callback=prepare(db);service=SimpleNamespace(db=db);bot=Mock()
+    callback["message"]["message_id"]=101
+    handle(service,bot,callback)
+    callback["message"]["message_id"]=100
+    db.put("order","order",{"recipient":"other_buyer","recipient_id":456})
     handle(service,bot,callback)
     with db.sessions() as s:assert not list(s.scalars(select(Task)))
 
@@ -52,8 +70,7 @@ def review(db,known_cost=True):
 def test_review_button_uses_dashboard_settlement_without_rebuy(db):
     callback=review(db);bot=Mock();service=SimpleNamespace(db=db)
     handle(service,bot,callback)
-    callback["data"]=callback["data"].replace(":ask",":yes")
-    handle(service,bot,callback);handle(service,bot,callback)
+    handle(service,bot,callback)
     assert db.get("order","order")["owner_delivery_requested"]
     assert db.get("operation","order:transfer")["state"]=="UNKNOWN"
     with db.sessions() as s:
@@ -64,9 +81,7 @@ def test_review_button_uses_dashboard_settlement_without_rebuy(db):
 
 def test_review_confirmation_rejects_changed_gift(db):
     callback=review(db);bot=Mock();service=SimpleNamespace(db=db)
-    handle(service,bot,callback)
     db.put("catalog_credit_payment","c",{"revision":3})
-    callback["data"]=callback["data"].replace(":ask",":yes")
     handle(service,bot,callback)
     assert not db.get("order","order").get("owner_delivery_requested")
 
@@ -75,15 +90,11 @@ def test_review_submitted_request_cannot_be_closed(db):
     callback=review(db);bot=Mock();service=SimpleNamespace(db=db)
     db.put("operation","order:transfer",{"state":"SUBMITTED"})
     handle(service,bot,callback)
-    callback["data"]=callback["data"].replace(":ask",":yes")
-    handle(service,bot,callback)
     assert not db.get("order","order").get("owner_delivery_requested")
 
 
 def test_manual_purchase_cost_reply_is_owner_only_and_bound_to_gift(db):
     callback=review(db,known_cost=False);bot=Mock();bot.request.return_value={"message_id":200};service=SimpleNamespace(db=db)
-    handle(service,bot,callback)
-    callback["data"]=callback["data"].replace(":ask",":yes")
     handle(service,bot,callback)
     assert not db.get("order","order").get("owner_delivery_requested")
     message={"from":{"id":88},"chat":{"id":77,"type":"private"},"reply_to_message":{"message_id":200},"text":"508,57"}
