@@ -39,10 +39,10 @@ def test_listing_upload_has_longer_read_timeout_and_no_retry(db):
     with pytest.raises(Exception,match="createItem"):
         transport._graphql_post_multipart({}, {},"createItem","/sell")
     transport.session.post.assert_called_once()
-    assert transport.session.post.call_args.kwargs["timeout"]==(20,120)
+    assert transport.session.post.call_args.kwargs["timeout"]==(120,120)
 
 
-@pytest.mark.parametrize("cost,balance,allowed",[(13,100,True),(51,100,False),(13,2,False)])
+@pytest.mark.parametrize("cost,balance,allowed",[(13,100,True),(51,100,True),(0,100,False),(13,2,False)])
 def test_premium_checked_before_paid_publish(db,cost,balance,allowed):
     db.configure(promotions_enabled=True)
     transport=PlayerokListingClient.__new__(PlayerokListingClient)
@@ -57,7 +57,7 @@ def test_premium_checked_before_paid_publish(db,cost,balance,allowed):
     data={"title":"Gift","collection":"Gift","price":500,"premium":True,"premium_max_rub":50}
     if allowed:
         result=client.create(data,b"png")
-        assert result["premium"] is True and result["premium_price"]==13
+        assert result["premium"] is True and result["premium_price"]==cost
         assert transport.publish_item.call_args.kwargs["premium"] is True
     else:
         with pytest.raises(ValueError):client.create(data,b"png")
@@ -69,7 +69,7 @@ def test_create_premium_budget_and_ledger(db,monkeypatch,limit,success):
     db.configure(promotions_enabled=True,daily_promotion_limit_rub=str(limit))
     db.secret("playerok_cookies","test-cookie")
     fields={"title":"Gift","pair_id":"p","price":500,"premium":True,"premium_max_rub":50}
-    op=new_operation(db,"create",{"fields":fields,"image":"cG5n"},{"cost_rub":"50"})
+    op=new_operation(db,"create",{"fields":fields,"image":"cG5n"},{"cost_rub":"0"})
     db.put("operation",op["id"],{"state":"QUEUED"})
     published=[]
     def create(self,data,image,before_publish=None):
@@ -85,7 +85,7 @@ def test_create_premium_budget_and_ledger(db,monkeypatch,limit,success):
         assert db.get("lot","draft")["premium"] is True
     else:
         assert db.get("operation",op["id"])["state"]=="UNKNOWN"
-        assert svc.daily_spent("promotion")==50
+        assert svc.daily_spent("promotion")==0
 
 
 def test_create_collection_only_preserves_promotional_scope(db,monkeypatch):

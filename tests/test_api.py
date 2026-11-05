@@ -342,11 +342,13 @@ def test_creating_listing_accepts_collection_or_exact_pair(db,client):
     enabled=client.post("/api/v1/lots/create-preview",headers=headers,data={**fields,"pair_id":"p","keep_in_sale":"true"},files={"image":("gift.png",png,"image/png")})
     assert enabled.json()["payload"]["fields"]["keep_in_sale"] is True
     premium_fields={**fields,"pair_id":"p","premium":"true"}
-    assert client.post("/api/v1/lots/create-preview",headers=headers,data=premium_fields,files={"image":("gift.png",png,"image/png")}).status_code==400
+    assert client.post("/api/v1/lots/create-preview",headers=headers,data=premium_fields,files={"image":("gift.png",png,"image/png")}).status_code==200
     premium=client.post("/api/v1/lots/create-preview",headers=headers,data={**premium_fields,"premium_max_rub":"50"},files={"image":("gift.png",png,"image/png")})
     assert premium.status_code==200
     assert premium.json()["payload"]["fields"]["premium"] is True
-    assert premium.json()["expected"]["cost_rub"]=="50"
+    assert premium.json()["expected"]["cost_rub"]=="0"
+    assert premium.json()["expected"]["premium_pending"] is True
+    assert "premium_max_rub" not in premium.json()["payload"]["fields"]
 
 
 

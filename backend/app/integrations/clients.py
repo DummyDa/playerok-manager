@@ -147,14 +147,18 @@ class Playerok:
                 or (draft.get("user") or {}).get("id")!=self.db.settings().get("playerok_account_id")):
                 raise ValueError("Черновик изменился или уже опубликован. Обновите список лотов")
             resume={"draft":draft}
+        filename=data.get("filename", "gift.png")
+        if not resume:
+            from .listing_images import optimize
+            image,filename=optimize(image,filename)
         listing = PlayerokListingInput(title=data["title"], collection=data["collection"], price=int(data["price"]),
-            description=data.get("description", ""), image_bytes=image, image_filename=data.get("filename", "gift.png"), premium=bool(data.get("premium",False)), keep_in_sale=bool(data.get("keep_in_sale",False)))
+            description=data.get("description", ""), image_bytes=image, image_filename=filename, premium=bool(data.get("premium",False)), keep_in_sale=bool(data.get("keep_in_sale",False)))
         if not listing.premium:return asdict(self.client.create_and_publish(listing,**resume))
         gate(self.db,"promotions")
         def check(item_id,tariff):
             gate(self.db,"promotions")
             cost=D(tariff.get("price",0))
-            if cost<=0 or cost>D(data.get("premium_max_rub",0)):raise ValueError("Стоимость премиума выше лимита; черновик создан, платная публикация не выполнена")
+            if cost<=0:raise ValueError("Playerok не подтвердил стоимость премиума; черновик не опубликован")
             balance=(self.viewer().get("balance") or {}).get("available")
             if balance is None or D(balance)<cost:raise ValueError("Недостаточно средств Playerok; черновик не опубликован")
             if before_publish:before_publish(item_id,tariff)

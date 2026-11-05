@@ -86,7 +86,7 @@ class Service:
 
     def preview_resume_create(self,op_id):
         op=self.db.get("operation",op_id)
-        if not op or op.get("action")!="create" or op.get("state") not in {"UNKNOWN","FAILED"}:raise ValueError("Публикация не требует восстановления")
+        if not op or op.get("action")!="create" or op.get("state") not in {"UNKNOWN","FAILED"} or op.get("recovery_dismissed"):raise ValueError("Публикация не требует восстановления")
         for other in self.db.list("operation",100000):
             if other.get("payload",{}).get("resume_of")==op_id and other.get("state") in {"PREVIEW","QUEUED","SUBMITTED","UNKNOWN"}:
                 if other["state"]=="PREVIEW" and other.get("expires",0)>time.time():return other
@@ -414,7 +414,6 @@ class Service:
                 if "price" in payload["changes"]:validate_price(self.db.get("lot",payload["lot_id"]),payload["changes"]["price"])
             elif action=="create" and payload["fields"].get("premium"):
                 gate(self.db,"promotions")
-                if D(payload["fields"].get("premium_max_rub",0))<=0:raise ValueError("Не задан лимит стоимости премиума")
             gate(self.db)
             if action=="order.transfer" and self.db.settings().get("delivery_transport")=="chrome_extension":
                 from .browser_delivery import enqueue
@@ -446,6 +445,7 @@ class Service:
                         limit=D(self.db.settings()["daily_promotion_limit_rub"])
                         if limit!=0 and self.daily_spent("promotion",op_id)+cost>limit:raise ValueError("Дневной бюджет премиума исчерпан; черновик не опубликован")
                         expected["cost_rub"]=str(cost)
+                        expected["premium_pending"]=False
                         self.db.put("operation",op_id,{"expected":expected})
                     result=client.create(fields,base64.b64decode(payload["image"]),before_publish=before_publish)
                     self.ledger(op_id,"promotion",expected["cost_rub"],result["item_id"])

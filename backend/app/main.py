@@ -255,7 +255,12 @@ def create_app(db:Database|None=None):
 
     @app.get("/api/v1/lots/recoveries")
     def listing_recoveries()->dict:
-        return {"items":[{"id":o["id"],"title":o.get("payload",{}).get("fields",{}).get("title"),"error":o.get("error")} for o in db.list("operation",100000) if o.get("action")=="create" and o.get("state") in {"UNKNOWN","FAILED"} and not o.get("payload",{}).get("resume_of")]}
+        return {"items":[{"id":o["id"],"title":o.get("payload",{}).get("fields",{}).get("title"),"error":o.get("error")} for o in db.list("operation",100000) if o.get("action")=="create" and o.get("state") in {"UNKNOWN","FAILED"} and not o.get("payload",{}).get("resume_of") and not o.get("recovery_dismissed")]}
+
+    @app.delete("/api/v1/lots/recoveries/{id}")
+    def dismiss_listing(id:str)->dict:
+        from .listing_recovery import dismiss
+        return dismiss(db,id)
 
     @app.post("/api/v1/lots/recoveries/{id}/preview")
     def resume_listing(id:str)->dict:return {"task_id":db.enqueue("preview_resume_create",{"operation_id":id},key="resume_preview:"+id)}
@@ -305,19 +310,18 @@ def create_app(db:Database|None=None):
         return {"items":[edit_preview(id,payload.changes) for id in dict.fromkeys(payload.item_ids)]}
 
     @app.post("/api/v1/lots/create-preview")
-    async def create_preview(title:str=Form(...),collection:str=Form(...),price:int=Form(...),pair_id:str=Form(""),description:str=Form(""),fee_profile_id:str=Form("default"),keep_in_sale:bool=Form(False),premium:bool=Form(False),premium_max_rub:int=Form(0),image:UploadFile=File(...))->dict:
+    async def create_preview(title:str=Form(...),collection:str=Form(...),price:int=Form(...),pair_id:str=Form(""),description:str=Form(""),fee_profile_id:str=Form("default"),keep_in_sale:bool=Form(False),premium:bool=Form(False),image:UploadFile=File(...))->dict:
         pair=db.get("pair",pair_id)
         collection=collection.strip()
         if not collection or len(collection)>120:raise ValueError("Выберите коллекцию")
         if pair_id and (not pair or pair["collection"]!=collection):raise ValueError("Выберите точную коллекцию и модель")
         if not db.get("fees",fee_profile_id):raise ValueError("Профиль комиссий не найден")
         if price<1 or price>10000000:raise ValueError("Некорректная цена")
-        if premium and not 1<=premium_max_rub<=10000000:raise ValueError("Укажите максимальную стоимость премиума")
         content=await image.read(10*1024*1024+1)
         if len(content)>10*1024*1024:raise ValueError("Изображение больше 10 МБ")
         if not (content.startswith(b"\x89PNG\r\n\x1a\n") or content.startswith(b"\xff\xd8\xff") or (content.startswith(b"RIFF") and content[8:12]==b"WEBP")):raise ValueError("Нужен PNG, JPEG или WebP")
         from .manual_delivery import buyer_copy
-        return new_operation(db,"create",{"fields":{"title":buyer_copy(db,title)[:200],"collection":collection,"pair_id":pair_id,"fee_profile_id":fee_profile_id,"price":price,"description":buyer_copy(db,description),"filename":image.filename,"keep_in_sale":keep_in_sale,"premium":premium,"premium_max_rub":premium_max_rub},"image":base64.b64encode(content).decode()},expected={"cost_rub":str(premium_max_rub if premium else 0)})
+        return new_operation(db,"create",{"fields":{"title":buyer_copy(db,title)[:200],"collection":collection,"pair_id":pair_id,"fee_profile_id":fee_profile_id,"price":price,"description":buyer_copy(db,description),"filename":image.filename,"keep_in_sale":keep_in_sale,"premium":premium},"image":base64.b64encode(content).decode()},expected={"cost_rub":"0","premium_pending":premium})
 
     @app.get("/api/v1/gift-pairs")
     def pairs()->dict:return {"items":db.list("pair"),"catalog":db.list("catalog")}

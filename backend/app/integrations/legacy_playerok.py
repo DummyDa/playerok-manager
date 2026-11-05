@@ -647,8 +647,9 @@ class PlayerokListingClient:
                 files=files,
                 headers=self._headers(operation_name, gql_path, accept="*/*"),
                 # Uploading/rendering listing images can outlive normal reads.
-                # Keep a bounded connection timeout and never retry a POST.
-                timeout=(min(30,self.config.playerok_request_timeout),max(120,self.config.playerok_request_timeout)),
+                # Requests uses the connection socket timeout while sending the
+                # body too. Give uploads time to send, and never retry a POST.
+                timeout=(max(120,self.config.playerok_request_timeout),max(120,self.config.playerok_request_timeout)),
             )
         except Exception as exc:
             if _is_transport_error(exc):

@@ -39,11 +39,11 @@ export async function waitTask(id: string) {
   }
   throw new Error("Задание продолжает работать в фоне. Проверьте историю операций.");
 }
-export async function waitOperation(id:string){
-  for(let i=0;i<120;i++){
+export async function waitOperation(id:string,timeoutSeconds=120){
+  for(let i=0;i<timeoutSeconds;i++){
     const operation=await api("/operations/"+encodeURIComponent(id));
     if(operation.state==="COMPLETE")return operation;
-    if(["FAILED","UNKNOWN","NOT_EXECUTED","EXPIRED"].includes(operation.state))throw new Error(operation.error||"Операция не выполнена. Проверьте историю операций.");
+    if(["FAILED","UNKNOWN","NOT_EXECUTED","EXPIRED","CANCELLED"].includes(operation.state))throw new Error(operation.error||"Операция не выполнена. Проверьте историю операций.");
     await new Promise(resolve=>setTimeout(resolve,1000));
   }
   throw new Error("Операция ещё выполняется в фоне. Проверьте её результат в истории операций; повторно не отправляйте.");
